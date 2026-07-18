@@ -63,7 +63,7 @@ typedef struct
 
 #define FIND_FIRST_MAGIC  0xc0ffee11
 
-static const UINT max_entry_size = offsetof( FILE_ID_EXTD_BOTH_DIRECTORY_INFORMATION, FileName[256] );
+static const UINT max_entry_size = offsetof( FILE_BOTH_DIRECTORY_INFORMATION, FileName[256] );
 
 const WCHAR windows_dir[] = L"C:\\windows";
 const WCHAR system_dir[] = L"C:\\windows\\system32";
@@ -1229,6 +1229,8 @@ HANDLE WINAPI DECLSPEC_HOTPATCH FindFirstFileExA( const char *filename, FINDEX_I
     dataA->ftLastWriteTime  = dataW.ftLastWriteTime;
     dataA->nFileSizeHigh    = dataW.nFileSizeHigh;
     dataA->nFileSizeLow     = dataW.nFileSizeLow;
+    dataA->dwReserved0      = dataW.dwReserved0;
+    dataA->dwReserved1      = dataW.dwReserved1;
     file_name_WtoA( dataW.cFileName, -1, dataA->cFileName, sizeof(dataA->cFileName) );
     file_name_WtoA( dataW.cAlternateFileName, -1, dataA->cAlternateFileName,
                     sizeof(dataA->cAlternateFileName) );
@@ -1406,7 +1408,7 @@ HANDLE WINAPI DECLSPEC_HOTPATCH FindFirstFileExW( LPCWSTR filename, FINDEX_INFO_
         {
             RtlInitUnicodeString( &mask_str, fixedup_mask );
             status = NtQueryDirectoryFile( info->handle, 0, NULL, NULL, &io, info->data, info->data_size,
-                                           FileIdExtdBothDirectoryInformation, FALSE, &mask_str, TRUE );
+                                           FileBothDirectoryInformation, FALSE, &mask_str, TRUE );
         }
         if (fixedup_mask != mask) HeapFree( GetProcessHeap(), 0, fixedup_mask );
         if (status)
@@ -1468,6 +1470,18 @@ HANDLE WINAPI FindFirstFileNameW( const WCHAR *file_name, DWORD flags, DWORD *le
     return INVALID_HANDLE_VALUE;
 }
 
+
+/******************************************************************************
+ *     FindNextFileNameW   (kernelbase.@)
+ */
+BOOL WINAPI FindNextFileNameW( HANDLE handle, DWORD *len, WCHAR *link_name )
+{
+    FIXME( "(%p, %p, %p): stub.\n", handle, len, link_name );
+    SetLastError( ERROR_CALL_NOT_IMPLEMENTED );
+    return FALSE;
+}
+
+
 /**************************************************************************
  *	FindFirstStreamW   (kernelbase.@)
  */
@@ -1506,7 +1520,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH FindNextFileA( HANDLE handle, WIN32_FIND_DATAA *da
 BOOL WINAPI DECLSPEC_HOTPATCH FindNextFileW( HANDLE handle, WIN32_FIND_DATAW *data )
 {
     FIND_FIRST_INFO *info = handle;
-    FILE_ID_EXTD_BOTH_DIRECTORY_INFORMATION *dir_info;
+    FILE_BOTH_DIR_INFORMATION *dir_info;
     BOOL ret = FALSE;
     NTSTATUS status;
 
@@ -1529,7 +1543,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH FindNextFileW( HANDLE handle, WIN32_FIND_DATAW *da
 
             if (info->data_size)
                 status = NtQueryDirectoryFile( info->handle, 0, NULL, NULL, &io, info->data, info->data_size,
-                                               FileIdExtdBothDirectoryInformation, FALSE, NULL, FALSE );
+                                               FileBothDirectoryInformation, FALSE, NULL, FALSE );
             else
                 status = STATUS_NO_MORE_FILES;
 
@@ -1546,7 +1560,7 @@ BOOL WINAPI DECLSPEC_HOTPATCH FindNextFileW( HANDLE handle, WIN32_FIND_DATAW *da
             info->data_pos = 0;
         }
 
-        dir_info = (FILE_ID_EXTD_BOTH_DIRECTORY_INFORMATION *)(info->data + info->data_pos);
+        dir_info = (FILE_BOTH_DIR_INFORMATION *)(info->data + info->data_pos);
 
         if (dir_info->NextEntryOffset) info->data_pos += dir_info->NextEntryOffset;
         else info->data_pos = info->data_len;
@@ -1566,7 +1580,12 @@ BOOL WINAPI DECLSPEC_HOTPATCH FindNextFileW( HANDLE handle, WIN32_FIND_DATAW *da
         data->ftLastWriteTime  = *(FILETIME *)&dir_info->LastWriteTime;
         data->nFileSizeHigh    = dir_info->EndOfFile.QuadPart >> 32;
         data->nFileSizeLow     = (DWORD)dir_info->EndOfFile.QuadPart;
-        data->dwReserved0      = dir_info->ReparsePointTag;
+        /* We intentionally do not use FileIdExtdBothDirectoryInformation here;
+         * it breaks certain hotpatchers. Windows returns the reparse tag in
+         * EaSize for FileBothDirectoryInformation. */
+        data->dwReserved0      = 0;
+        if (dir_info->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)
+            data->dwReserved0  = dir_info->EaSize;
         data->dwReserved1      = 0;
 
         memcpy( data->cFileName, dir_info->FileName, dir_info->FileNameLength );
@@ -2944,6 +2963,24 @@ BOOL WINAPI DECLSPEC_HOTPATCH SetCurrentDirectoryW( LPCWSTR dir )
 {
     UNICODE_STRING dirW;
 
+    wchar_t sgi[MAX_PATH];
+    DWORD size;
+    static INT isVGSOH = -1;
+
+    if (isVGSOH == -1) {
+        size = GetEnvironmentVariableW(L"SteamGameId", sgi, MAX_PATH);
+        isVGSOH = (size > 0 && !wcscmp(sgi, L"218210"));
+    }
+
+    if (isVGSOH) {
+        SIZE_T len = wcslen(dir);
+        if (len > 0 && dir[len - 1] == '.') {
+            WCHAR *p = (WCHAR *)dir + len - 1;
+            *p = '\0';
+            FIXME("%s . fixed\n", debugstr_w(dir));
+        }
+    }
+
     RtlInitUnicodeString( &dirW, dir );
     return set_ntstatus( RtlSetCurrentDirectory_U( &dirW ));
 }
@@ -3100,26 +3137,27 @@ BOOL WINAPI DECLSPEC_HOTPATCH FlushFileBuffers( HANDLE file )
 BOOL WINAPI DECLSPEC_HOTPATCH GetFileInformationByHandle( HANDLE file, BY_HANDLE_FILE_INFORMATION *info )
 {
     FILE_FS_VOLUME_INFORMATION volume_info;
-    FILE_STAT_INFORMATION stat_info;
+    FILE_ALL_INFORMATION all_info;
     IO_STATUS_BLOCK io;
     NTSTATUS status;
 
-    status = NtQueryInformationFile( file, &io, &stat_info, sizeof(stat_info), FileStatInformation );
+    status = NtQueryInformationFile( file, &io, &all_info, sizeof(all_info), FileAllInformation );
+    if (status == STATUS_BUFFER_OVERFLOW) status = STATUS_SUCCESS;
     if (!set_ntstatus( status )) return FALSE;
 
-    info->dwFileAttributes                = stat_info.FileAttributes;
-    info->ftCreationTime.dwHighDateTime   = stat_info.CreationTime.u.HighPart;
-    info->ftCreationTime.dwLowDateTime    = stat_info.CreationTime.u.LowPart;
-    info->ftLastAccessTime.dwHighDateTime = stat_info.LastAccessTime.u.HighPart;
-    info->ftLastAccessTime.dwLowDateTime  = stat_info.LastAccessTime.u.LowPart;
-    info->ftLastWriteTime.dwHighDateTime  = stat_info.LastWriteTime.u.HighPart;
-    info->ftLastWriteTime.dwLowDateTime   = stat_info.LastWriteTime.u.LowPart;
+    info->dwFileAttributes                = all_info.BasicInformation.FileAttributes;
+    info->ftCreationTime.dwHighDateTime   = all_info.BasicInformation.CreationTime.u.HighPart;
+    info->ftCreationTime.dwLowDateTime    = all_info.BasicInformation.CreationTime.u.LowPart;
+    info->ftLastAccessTime.dwHighDateTime = all_info.BasicInformation.LastAccessTime.u.HighPart;
+    info->ftLastAccessTime.dwLowDateTime  = all_info.BasicInformation.LastAccessTime.u.LowPart;
+    info->ftLastWriteTime.dwHighDateTime  = all_info.BasicInformation.LastWriteTime.u.HighPart;
+    info->ftLastWriteTime.dwLowDateTime   = all_info.BasicInformation.LastWriteTime.u.LowPart;
     info->dwVolumeSerialNumber            = 0;
-    info->nFileSizeHigh                   = stat_info.EndOfFile.u.HighPart;
-    info->nFileSizeLow                    = stat_info.EndOfFile.u.LowPart;
-    info->nNumberOfLinks                  = stat_info.NumberOfLinks;
-    info->nFileIndexHigh                  = stat_info.FileId.u.HighPart;
-    info->nFileIndexLow                   = stat_info.FileId.u.LowPart;
+    info->nFileSizeHigh                   = all_info.StandardInformation.EndOfFile.u.HighPart;
+    info->nFileSizeLow                    = all_info.StandardInformation.EndOfFile.u.LowPart;
+    info->nNumberOfLinks                  = all_info.StandardInformation.NumberOfLinks;
+    info->nFileIndexHigh                  = all_info.InternalInformation.IndexNumber.u.HighPart;
+    info->nFileIndexLow                   = all_info.InternalInformation.IndexNumber.u.LowPart;
 
     status = NtQueryVolumeInformationFile( file, &io, &volume_info, sizeof(volume_info), FileFsVolumeInformation );
     if (status == STATUS_SUCCESS || status == STATUS_BUFFER_OVERFLOW)

@@ -526,7 +526,8 @@ static const struct column col_systemenclosure[] =
     { L"LockPresent",  CIM_BOOLEAN },
     { L"Manufacturer", CIM_STRING|COL_FLAG_DYNAMIC },
     { L"Name",         CIM_STRING },
-    { L"Tag",          CIM_STRING },
+    { L"SerialNumber", CIM_STRING|COL_FLAG_DYNAMIC },
+    { L"Tag",          CIM_STRING|COL_FLAG_KEY },
 };
 static const struct column col_systemsecurity[] =
 {
@@ -607,12 +608,6 @@ static const struct column col_videocontroller[] =
     { L"VideoMode",                   CIM_UINT16 },
     { L"VideoModeDescription",        CIM_STRING|COL_FLAG_DYNAMIC },
     { L"VideoProcessor",              CIM_STRING|COL_FLAG_DYNAMIC },
-};
-static const struct column col_serverfeature[] =
-{
-    { L"ID",       CIM_UINT32|COL_FLAG_KEY },
-    { L"ParentID", CIM_UINT32 },
-    { L"Name",     CIM_STRING },
 };
 
 static const struct column col_volume[] =
@@ -1129,6 +1124,7 @@ struct record_systemenclosure
     int                 lockpresent;
     const WCHAR        *manufacturer;
     const WCHAR        *name;
+    const WCHAR        *serial_number;
     const WCHAR        *tag;
 };
 struct record_videocontroller
@@ -1191,12 +1187,6 @@ struct record_videocontroller
     UINT16       videomode;
     const WCHAR *videomodedescription;
     const WCHAR *videoprocessor;
-};
-struct record_serverfeature
-{
-    UINT32       id;
-    UINT32       parentid;
-    const WCHAR *name;
 };
 
 struct record_volume
@@ -1343,10 +1333,6 @@ static const struct array systemenclosure_chassistypes_array =
 static const struct record_systemsecurity data_systemsecurity[] =
 {
     { security_get_sd, security_set_sd }
-};
-static const struct record_serverfeature data_serverfeatures[] =
-{
-    { 35, 0, L"Desktop Experience" },
 };
 static const struct record_winsat data_winsat[] =
 {
@@ -4588,6 +4574,13 @@ done:
     return ret;
 }
 
+static WCHAR *get_systemenclosure_serialnumber( const char *buf, UINT len )
+{
+    WCHAR *ret = get_smbios_string( SMBIOS_TYPE_CHASSIS, 0, offsetof(struct smbios_chassis, serial), buf, len );
+    if (!ret) return wcsdup( L"0" );
+    return ret;
+}
+
 static enum fill_status fill_systemenclosure( struct table *table, const struct expr *cond )
 {
     struct record_systemenclosure *rec;
@@ -4608,6 +4601,7 @@ static enum fill_status fill_systemenclosure( struct table *table, const struct 
     rec->lockpresent  = get_systemenclosure_lockpresent( buf, len );
     rec->manufacturer = get_systemenclosure_manufacturer( buf, len );
     rec->name         = L"System Enclosure";
+    rec->serial_number = get_systemenclosure_serialnumber( buf, len );
     rec->tag          = L"System Enclosure 0";
     if (!match_row( table, row, cond, &status )) free_row_values( table, row );
     else row++;
@@ -4668,15 +4662,23 @@ static struct display_adapter *get_display_adapters( UINT *count )
 
     while(SetupDiEnumDeviceInfo( devs, idx_devinfo++, &dev_info ))
     {
-        WCHAR *driver, *hw_ids;
+        WCHAR *driver, *instance_id;
         UINT key_len;
         WCHAR *key_path;
         HKEY key_instance;
+        DWORD size;
 
-        if (!(driver = get_string_devprop( devs, &dev_info, &DEVPKEY_Device_Driver ))) continue;
-        if (!(hw_ids = get_string_devprop( devs, &dev_info, &DEVPKEY_Device_HardwareIds )))
+        SetupDiGetDeviceInstanceIdW( devs, &dev_info, NULL, 0, &size );
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) continue;
+        if (!(instance_id = malloc( size * sizeof(*instance_id) ))) continue;
+        if (!SetupDiGetDeviceInstanceIdW( devs, &dev_info, instance_id, size, NULL ))
         {
-            free( driver );
+            free( instance_id );
+            continue;
+        }
+        if (!(driver = get_string_devprop( devs, &dev_info, &DEVPKEY_Device_Driver )))
+        {
+            free( instance_id );
             continue;
         }
 
@@ -4684,7 +4686,7 @@ static struct display_adapter *get_display_adapters( UINT *count )
         if (!(key_path = calloc( sizeof(WCHAR), key_len )))
         {
             free( driver );
-            free( hw_ids );
+            free( instance_id );
             continue;
         }
 
@@ -4693,7 +4695,7 @@ static struct display_adapter *get_display_adapters( UINT *count )
 
         if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, key_path, 0, KEY_QUERY_VALUE, &key_instance ))
         {
-            free( hw_ids );
+            free( instance_id );
             free( key_path );
             continue;
         }
@@ -4703,9 +4705,7 @@ static struct display_adapter *get_display_adapters( UINT *count )
         ret[i].driver_date = get_reg_value( key_instance, L"DriverDate" );
         ret[i].driver_desc = get_reg_value( key_instance, L"DriverDesc" );
         ret[i].driver_version = get_reg_value( key_instance, L"DriverVersion" );
-        /* DEVPKEY_Device_HardwareIds is actually an array of null-terminated
-           strings, so consumers will only see the first one. */
-        ret[i].pnpdevice_id = hw_ids;
+        ret[i].pnpdevice_id = instance_id;
         ret[i].dac_type = get_reg_value( key_instance, L"HardwareInformation.DacType" );
         ret[i].memory_size = get_reg_value_dword( key_instance, L"HardwareInformation.MemorySize" );
         if (++i >= nb_allocated)
@@ -4964,11 +4964,6 @@ static struct table cimv2_builtin_classes[] =
     { L"Win32_WinSAT", C(col_winsat), D(data_winsat) },
 };
 
-static struct table server_feature[] =
-{
-    { L"Win32_ServerFeature", C(col_serverfeature), D(data_serverfeatures) },
-};
-
 static struct table wmi_builtin_classes[] =
 {
     { L"MSSMBios_RawSMBiosTables", C(col_rawsmbiostables), 0, 0, NULL, fill_rawbiosdata },
@@ -5054,18 +5049,6 @@ static struct table win_storage_builtin_classes[] =
 #undef C
 #undef D
 
-static BOOL is_onenote(void)
-{
-    static const char *onenote = "ONENOTE.EXE";
-    char name[MAX_PATH], *ptr;
-
-    if (!GetModuleFileNameA(NULL, name, sizeof(name)))
-        return FALSE;
-
-    ptr = strstr(name, onenote);
-    return ptr && !ptr[strlen(onenote)];
-}
-
 static const struct
 {
     const WCHAR  *name;
@@ -5089,14 +5072,7 @@ void init_table_list( void )
     {
         list_init( &tables[ns] );
         for (i = 0; i < builtin_namespaces[ns].table_count; i++)
-        {
             list_add_tail( &tables[ns], &builtin_namespaces[ns].tables[i].entry );
-            /* CXHACK: 16057 - Client system do not support this class, for some reason OneNote asks for it anyway. */
-            if (!ns && is_onenote()) {
-                struct table *table = &server_feature[0];
-                list_add_tail( &tables[ns], &table->entry );
-            }
-        }
         table_list[ns] = &tables[ns];
     }
 }

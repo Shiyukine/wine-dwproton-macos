@@ -1133,18 +1133,77 @@ static BOOL CSignedMsgData_UpdateAuthenticatedAttributes(
             }
             if (ret)
             {
-                LPBYTE encodedAttrs;
-                DWORD size;
-
-                ret = CryptEncodeObjectEx(X509_ASN_ENCODING, PKCS_ATTRIBUTES,
-                 &msg_data->info->rgSignerInfo[i].AuthAttrs,
-                 CRYPT_ENCODE_ALLOC_FLAG, NULL, &encodedAttrs, &size);
-                if (ret)
+                if (flag == Verify)
                 {
-                    ret = CryptHashData(
-                     msg_data->signerHandles[i].authAttrHash, encodedAttrs,
-                     size, 0);
-                    LocalFree(encodedAttrs);
+                    /* It appears that windows does not sort PKCS attributes when
+                     * encoding and hashing for verification purposes, therefore
+                     * we must not sort the attributes either.
+                     */
+                    LPBYTE *attr_bufs;
+                    DWORD *attr_sizes, j, content_length;
+
+                    BYTE header[4];
+                    DWORD header_size;
+
+                    CRYPT_ATTRIBUTES *attrs = &msg_data->info->rgSignerInfo[i].AuthAttrs;
+
+                    attr_bufs = CryptMemAlloc(attrs->cAttr * sizeof(LPBYTE));
+                    attr_sizes = CryptMemAlloc(attrs->cAttr * sizeof(DWORD));
+
+                    if (!attr_bufs || !attr_sizes)
+                    {
+                        ret = FALSE;
+                        goto cleanup;
+                    }
+
+                    memset(attr_bufs, 0, attrs->cAttr * sizeof(LPBYTE));
+                    content_length = 0;
+
+                    for (j = 0; ret && j < attrs->cAttr; j++)
+                    {
+                        ret = CryptEncodeObjectEx(X509_ASN_ENCODING, PKCS_ATTRIBUTE,
+                         &attrs->rgAttr[j], CRYPT_ENCODE_ALLOC_FLAG, NULL,
+                         &attr_bufs[j], &attr_sizes[j]);
+                        content_length += attr_sizes[j];
+                    }
+
+                    if (ret)
+                    {
+                        header[0] = ASN_CONSTRUCTOR | ASN_SETOF;
+                        CRYPT_EncodeLen(content_length, NULL, &header_size);
+                        CRYPT_EncodeLen(content_length, header + 1, &header_size);
+                        header_size++;
+
+                        ret = CryptHashData(msg_data->signerHandles[i].authAttrHash,
+                         header, header_size, 0);
+
+                        for (j = 0; ret && j < attrs->cAttr; j++)
+                            ret = CryptHashData(msg_data->signerHandles[i].authAttrHash,
+                             attr_bufs[j], attr_sizes[j], 0);
+                    }
+
+                    for (j = 0; j < attrs->cAttr; j++)
+                        LocalFree(attr_bufs[j]);
+
+                    cleanup:
+                    CryptMemFree(attr_bufs);
+                    CryptMemFree(attr_sizes);
+                }
+                else
+                {
+                    LPBYTE encodedAttrs;
+                    DWORD size;
+
+                    ret = CryptEncodeObjectEx(X509_ASN_ENCODING, PKCS_ATTRIBUTES,
+                     &msg_data->info->rgSignerInfo[i].AuthAttrs,
+                     CRYPT_ENCODE_ALLOC_FLAG, NULL, &encodedAttrs, &size);
+                    if (ret)
+                    {
+                        ret = CryptHashData(
+                         msg_data->signerHandles[i].authAttrHash, encodedAttrs,
+                         size, 0);
+                        LocalFree(encodedAttrs);
+                    }
                 }
             }
         }

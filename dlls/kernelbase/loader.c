@@ -60,53 +60,11 @@ static CRITICAL_SECTION exclusive_datafile_list_section = { &critsect_debug, -1,
  * Modules
  ***********************************************************************/
 
-static BOOL needs_int3_hack(void)
-{
-    static volatile int cache = -1;
-    TRACE("HACK: cache=%d\n", cache);
-
-    if (cache == -1)
-    {
-        const WCHAR *p, *name = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
-        WCHAR env[8];
-        BOOL ret;
-
-        if ((p = wcsrchr(name, '/')))
-            name = p + 1;
-        if ((p = wcsrchr(name, '\\')))
-            name = p + 1;
-
-        ret = ((!wcsicmp(name, L"Endfield.exe")) ||
-               (!wcsicmp(name, L"EM-Win64-Shipping.exe")));
-
-        if (GetEnvironmentVariableW(L"PROTON_ENABLE_INT3_HACK", env, ARRAY_SIZE(env)))
-        {
-            TRACE("HACK: YES\n");
-            // if (_wtoi(env) == 1)
-            ret = TRUE;
-        }
-
-        cache = ret;
-    }
-
-    return cache;
-}
-
-static void __attribute__((naked)) int3_stub(void)
-{
-    asm("int3\t\n"
-        "int3\t\n"
-        "int3\t\n"
-        "int3\t\n");
-}
-
 /******************************************************************
  *      get_proc_address
  */
-FARPROC WINAPI get_proc_address( HMODULE module, LPCSTR function )
+FARPROC WINAPI get_proc_address(HMODULE module, LPCSTR function)
 {
-    // FIXME("get_proc_address kernelbase called for %s\n", (ULONG_PTR)function >> 16 ? function : "(ordinal)");
-
     FARPROC proc;
     ANSI_STRING str;
 
@@ -114,12 +72,6 @@ FARPROC WINAPI get_proc_address( HMODULE module, LPCSTR function )
 
     if ((ULONG_PTR)function >> 16)
     {
-        if (needs_int3_hack() && (strcmp(function, "KiUserApcDispatcher") == 0 || strcmp(function, "KiUserCallbackDispatcher") == 0))
-        {
-            FIXME("HACK: returning int3 stub instead of %s\n", function);
-            return (FARPROC)&int3_stub;
-        }
-
         RtlInitAnsiString( &str, function );
         if (!set_ntstatus( LdrGetProcedureAddress( module, &str, 0, (void**)&proc ))) return NULL;
     }
@@ -128,7 +80,6 @@ FARPROC WINAPI get_proc_address( HMODULE module, LPCSTR function )
 
     return proc;
 }
-
 
 /******************************************************************
  *      load_library_as_datafile
@@ -199,19 +150,22 @@ failed:
 static HMODULE load_library( const UNICODE_STRING *libname, DWORD flags )
 {
     const DWORD unsupported_flags = LOAD_IGNORE_CODE_AUTHZ_LEVEL | LOAD_LIBRARY_REQUIRE_SIGNED_TARGET;
+    const ULONG load_library_search_flags = LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
     NTSTATUS status;
     HMODULE module;
     WCHAR *load_path, *dummy;
+    DWORD load_flags = 0, search_flags;
 
     if (flags & unsupported_flags) FIXME( "unsupported flag(s) used %#08lx\n", flags );
-
-    if (!set_ntstatus( LdrGetDllPath( libname->Buffer, flags, &load_path, &dummy ))) return 0;
 
     if (flags & (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE |
                  LOAD_LIBRARY_AS_IMAGE_RESOURCE))
     {
+        if (!set_ntstatus(LdrGetDllPath(libname->Buffer, flags, &load_path, &dummy)))
+            return 0;
         if (LdrGetDllHandleEx( 0, load_path, NULL, libname, &module ))
             load_library_as_datafile( load_path, flags, libname->Buffer, &module );
+        RtlReleasePath(load_path);
     }
     else
     {
@@ -223,8 +177,6 @@ static HMODULE load_library( const UNICODE_STRING *libname, DWORD flags )
                 SetLastError( ERROR_DLL_NOT_FOUND );
         }
     }
-
-    RtlReleasePath( load_path );
     return module;
 }
 
@@ -348,7 +300,7 @@ DWORD WINAPI DECLSPEC_HOTPATCH GetModuleFileNameW( HMODULE module, LPWSTR filena
     UNICODE_STRING name;
     NTSTATUS status;
 
-    if (!module && ((win16_tib = NtCurrentTeb()->Tib.SubSystemTib)) && win16_tib->exe_name)
+    if (!module && (0 && (win16_tib = NtCurrentTeb()->Tib.SubSystemTib)) && win16_tib->exe_name)
     {
         len = min( size, win16_tib->exe_name->Length / sizeof(WCHAR) );
         memcpy( filename, win16_tib->exe_name->Buffer, len * sizeof(WCHAR) );
@@ -592,6 +544,133 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExA( LPCSTR name, HANDLE file, DWORD
     return module;
 }
 
+/*
+ * LoadLibraryExW redirect hack
+ */
+BOOL loaddll_redirect(LPCWSTR name, LPWSTR override, DWORD size)
+{
+    WCHAR *entry, *next, *match, *token, *path, *stem;
+    WCHAR envW[MAX_PATH * 8] = {0}, nameW[MAX_PATH] = {0};
+    UINT ret;
+
+    if (wcsstr(name, L"nvidia/wine/nvngx_dlssg.dll"))
+    {
+        TRACE("refusing to redirect %ls\n", name);
+        return FALSE;
+    }
+
+    ret = GetEnvironmentVariableW(L"WINE_LOADDLL_REDIRECT", envW, sizeof(envW));
+    if (!ret)
+        return FALSE;
+    if (ret >= ARRAY_SIZE(envW))
+    {
+        ERR("WINE_LOADDLL_REDIRECT larger than %lu (%u)\n", (unsigned long)ARRAY_SIZE(envW), ret);
+        return FALSE;
+    }
+
+    wcscpy(nameW, name);
+    stem = wcspbrk(nameW, L"\\/");
+    while (stem)
+    {
+        if (!wcspbrk(stem + 1, L"\\/"))
+            break;
+        stem = wcspbrk(++stem, L"\\/");
+    }
+    if (stem)
+        stem++;
+    else
+        stem = nameW;
+
+    TRACE("looking for %ls redirect\n", stem);
+
+    entry = envW;
+    while (*entry)
+    {
+        while (*entry == L';')
+            entry++;
+        if (!*entry)
+            break;
+        next = wcschr(entry, L';');
+        if (next)
+            *next++ = 0;
+        else
+            next = entry + wcslen(entry);
+        if ((match = wcsstr(entry, stem)))
+        {
+            path = wcschr(match, L'=');
+            if (path)
+                *path++ = 0;
+            else
+                return FALSE;
+            token = wcschr(match, L',');
+            if (token)
+                *token = 0;
+            if (wcsstr(path, match) || !wcscmp(path + wcslen(path) - 4, L".dll"))
+                wcscpy(override, path);
+            else
+                swprintf(override, size, L"%s\\%s", path, match);
+            return TRUE;
+        }
+        entry = next;
+    }
+    return FALSE;
+}
+
+/*
+ * LoadLibraryExW upscaler hack
+ */
+BOOL loaddll_upscaler_hack(LPCWSTR name, LPWSTR override)
+{
+    WCHAR envW[64] = {0};
+    UINT ret;
+
+    ret = GetEnvironmentVariableW(L"WINE_UPSCALER_REPLACE", envW, sizeof(envW));
+    if (!ret || ret >= ARRAY_SIZE(envW))
+        return FALSE;
+
+    if (wcsstr(envW, L"ffx3"))
+    {
+        /* HACK: override amd_fidelityfx_*.dll path to a non-standard location for FSR3 SDK upgrade */
+        if (wcsstr(name, L"amd_fidelityfx_vk.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\amd_fidelityfx_vk.dll");
+        if (wcsstr(name, L"amd_fidelityfx_dx12.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\amd_fidelityfx_dx12.dll");
+    }
+    if (wcsstr(envW, L"ffx4"))
+    {
+        /* HACK: override amd_fidelityfx_*.dll path to a non-standard location for FSR4 SDK upgrade */
+        if (wcsstr(name, L"amd_fidelityfx_loader_dx12.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\amd_fidelityfx_loader_dx12.dll");
+        if (wcsstr(name, L"amd_fidelityfx_upscaler_dx12.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\amd_fidelityfx_upscaler_dx12.dll");
+        if (wcsstr(name, L"amd_fidelityfx_framegeneration_dx12.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\amd_fidelityfx_framegeneration_dx12.dll");
+    }
+    if (wcsstr(envW, L"dlss"))
+    {
+        /* HACK: override nvngx_dlss*.dll paths to a non-standard location for DLSS upgrade */
+        if (wcsstr(name, L"nvngx_dlss.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\nvngx_dlss.dll");
+        if (wcsstr(name, L"nvngx_dlssd.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\nvngx_dlssd.dll");
+        if (wcsstr(name, L"nvngx_dlssg.dll") && !wcsstr(name, L"nvidia/wine/nvngx_dlssg.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\nvngx_dlssg.dll");
+    }
+    if (wcsstr(envW, L"xess"))
+    {
+        /* HACK: override libxe*.dll paths to a non-standard location for XeSS upgrade */
+        if (wcsstr(name, L"libxess.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\libxess.dll");
+        if (wcsstr(name, L"libxess_dx11.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\libxess_dx11.dll");
+        if (wcsstr(name, L"libxell.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\libxell.dll");
+        if (wcsstr(name, L"libxess_fg.dll"))
+            wcscpy(override, L"c:\\windows\\system32\\umu\\libxess_fg.dll");
+    }
+
+    return override[0] ? TRUE : FALSE;
+}
 
 /***********************************************************************
  *	LoadLibraryExW   (kernelbase.@)
@@ -600,17 +679,29 @@ HMODULE WINAPI DECLSPEC_HOTPATCH LoadLibraryExW( LPCWSTR name, HANDLE file, DWOR
 {
     UNICODE_STRING str;
     HMODULE module;
+    WCHAR overrideW[MAX_PATH] = {0};
 
     if (!name)
     {
         SetLastError( ERROR_INVALID_PARAMETER );
         return 0;
     }
-    RtlInitUnicodeString( &str, name );
+
+    /* HACK: allow webservices.dll to be shipped together with remote debugger tools. */
+    if (flags == LOAD_LIBRARY_SEARCH_SYSTEM32 && !file && !wcscmp(name, L"webservices.dll"))
+    {
+        FIXME("HACK: ignoring LOAD_LIBRARY_SEARCH_SYSTEM32 for webservices.dll\n");
+        flags = 0;
+    }
+
+    if (loaddll_upscaler_hack(name, overrideW))
+        FIXME("HACK: redirecting %s to %s\n", debugstr_w(name), debugstr_w(overrideW));
+
+    RtlInitUnicodeString(&str, overrideW[0] ? overrideW : name);
     if (str.Length && str.Buffer[str.Length/sizeof(WCHAR) - 1] != ' ') return load_library( &str, flags );
 
     /* library name has trailing spaces */
-    RtlCreateUnicodeString( &str, name );
+    RtlCreateUnicodeString(&str, overrideW[0] ? overrideW : name);
     while (str.Length > sizeof(WCHAR) && str.Buffer[str.Length/sizeof(WCHAR) - 1] == ' ')
         str.Length -= sizeof(WCHAR);
 
