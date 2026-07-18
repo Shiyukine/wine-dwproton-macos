@@ -60,12 +60,53 @@ static CRITICAL_SECTION exclusive_datafile_list_section = { &critsect_debug, -1,
  * Modules
  ***********************************************************************/
 
+static BOOL needs_int3_hack(void)
+{
+    static volatile int cache = -1;
+    TRACE("HACK: cache=%d\n", cache);
+
+    if (cache == -1)
+    {
+        const WCHAR *p, *name = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+        WCHAR env[8];
+        BOOL ret;
+
+        if ((p = wcsrchr(name, '/')))
+            name = p + 1;
+        if ((p = wcsrchr(name, '\\')))
+            name = p + 1;
+
+        ret = ((!wcsicmp(name, L"Endfield.exe")) ||
+               (!wcsicmp(name, L"EM-Win64-Shipping.exe")));
+
+        if (GetEnvironmentVariableW(L"PROTON_ENABLE_INT3_HACK", env, ARRAY_SIZE(env)))
+        {
+            TRACE("HACK: YES\n");
+            // if (_wtoi(env) == 1)
+            ret = TRUE;
+        }
+
+        cache = ret;
+    }
+
+    return cache;
+}
+
+static void __attribute__((naked)) int3_stub(void)
+{
+    asm("int3\t\n"
+        "int3\t\n"
+        "int3\t\n"
+        "int3\t\n");
+}
 
 /******************************************************************
  *      get_proc_address
  */
 FARPROC WINAPI get_proc_address( HMODULE module, LPCSTR function )
 {
+    // FIXME("get_proc_address kernelbase called for %s\n", (ULONG_PTR)function >> 16 ? function : "(ordinal)");
+
     FARPROC proc;
     ANSI_STRING str;
 
@@ -73,6 +114,12 @@ FARPROC WINAPI get_proc_address( HMODULE module, LPCSTR function )
 
     if ((ULONG_PTR)function >> 16)
     {
+        if (needs_int3_hack() && (strcmp(function, "KiUserApcDispatcher") == 0 || strcmp(function, "KiUserCallbackDispatcher") == 0))
+        {
+            FIXME("HACK: returning int3 stub instead of %s\n", function);
+            return (FARPROC)&int3_stub;
+        }
+
         RtlInitAnsiString( &str, function );
         if (!set_ntstatus( LdrGetProcedureAddress( module, &str, 0, (void**)&proc ))) return NULL;
     }

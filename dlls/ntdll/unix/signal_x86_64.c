@@ -2019,14 +2019,7 @@ static inline BOOL emulate_xgetbv( ucontext_t *sigcontext, CONTEXT *context )
     }
 
     RDX_sig(sigcontext) = 0;
-    if (sequoia_or_later)
-    {
-        /* Arguably we should only claim AVX support if ROSETTA_ADVERTISE_AVX is
-           set, but presumably apps will also check cpuid. */
-        RAX_sig(sigcontext) = 0xe7;  /* fpu/mmx, sse, avx, full avx-512 */
-    }
-    else
-        RAX_sig(sigcontext) = 0x07;  /* fpu/mmx, sse */
+    RAX_sig(sigcontext) = 0x07; /* fpu/mmx, sse */
 
     RIP_sig(sigcontext) += 3;
     TRACE_(seh)( "emulated an XGETBV instruction\n" );
@@ -2044,6 +2037,10 @@ static inline DWORD is_privileged_instr( CONTEXT *context )
     BYTE instr[16];
     unsigned int i, prefix_count = 0;
     unsigned int len = virtual_uninterrupted_read_memory( (BYTE *)context->Rip, instr, sizeof(instr) );
+
+    ERR("is_privileged_instr: rip=%p len=%u bytes=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+        (void *)context->Rip, len,
+        instr[0], instr[1], instr[2], instr[3], instr[4], instr[5], instr[6], instr[7]);
 
     for (i = 0; i < len; i++) switch (instr[i])
     {
@@ -2514,10 +2511,41 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         break;
     case TRAP_x86_PRIVINFLT:   /* Invalid opcode exception */
 #ifdef __APPLE__
+        /* HACK: Rosetta 2 spuriously raises SIGILL on some valid multi-byte
+         * NOPs (0F 1F /r) during translation. A real CPU can never fault on
+         * this instruction under any privilege level, so treat it as a
+         * translation glitch: skip over it and resume, rather than raising
+         * any exception. */
+        {
+            BYTE instr[4];
+            unsigned int len = virtual_uninterrupted_read_memory((BYTE *)context.c.Rip, instr, sizeof(instr));
+            unsigned int i = 0;
+            if (len >= 1 && instr[i] >= 0x40 && instr[i] <= 0x4f)
+                i++; /* optional REX prefix */
+            if (len >= i + 3 && instr[i] == 0x0f && instr[i + 1] == 0x1f)
+            {
+                BYTE modrm = instr[i + 2];
+                if ((modrm >> 6) == 3) /* mod == 11: register-direct form */
+                {
+                    context.c.Rip += i + 3;
+                    restore_context(&context, ucontext);
+                    return;
+                }
+            }
+        }
+
         /* CW HACK 20186 */
         if (handle_cet_nop( ucontext, &context.c )) return;
         /* CW HACK 23427 */
         if (emulate_xgetbv( ucontext, &context.c )) return;
+
+        {
+            DWORD priv_code = is_privileged_instr(&context.c);
+            ERR("HACK: PRIVINFLT: rip=%p is_privileged_instr returned 0x%lx\n",
+                (void *)context.c.Rip, (long)priv_code);
+            if ((rec.ExceptionCode = priv_code))
+                break;
+        }
 #endif
         rec.ExceptionCode = EXCEPTION_ILLEGAL_INSTRUCTION;
         break;

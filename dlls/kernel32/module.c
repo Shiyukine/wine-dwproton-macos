@@ -40,11 +40,10 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(module);
 
-
 /****************************************************************************
  *              GetDllDirectoryA   (KERNEL32.@)
  */
-DWORD WINAPI GetDllDirectoryA( DWORD buf_len, LPSTR buffer )
+DWORD WINAPI GetDllDirectoryA(DWORD buf_len, LPSTR buffer)
 {
     UNICODE_STRING str;
     NTSTATUS status;
@@ -56,77 +55,81 @@ DWORD WINAPI GetDllDirectoryA( DWORD buf_len, LPSTR buffer )
 
     for (;;)
     {
-        status = LdrGetDllDirectory( &str );
-        if (status != STATUS_BUFFER_TOO_SMALL) break;
-        if (str.Buffer != data) HeapFree( GetProcessHeap(), 0, str.Buffer );
+        status = LdrGetDllDirectory(&str);
+        if (status != STATUS_BUFFER_TOO_SMALL)
+            break;
+        if (str.Buffer != data)
+            HeapFree(GetProcessHeap(), 0, str.Buffer);
         str.MaximumLength = str.Length;
-        if (!(str.Buffer = HeapAlloc( GetProcessHeap(), 0, str.MaximumLength )))
+        if (!(str.Buffer = HeapAlloc(GetProcessHeap(), 0, str.MaximumLength)))
         {
             status = STATUS_NO_MEMORY;
             break;
         }
     }
 
-    if (!set_ntstatus( status )) return 0;
+    if (!set_ntstatus(status))
+        return 0;
 
-    len = FILE_name_WtoA( str.Buffer, str.Length / sizeof(WCHAR), NULL, 0 );
+    len = FILE_name_WtoA(str.Buffer, str.Length / sizeof(WCHAR), NULL, 0);
     if (buffer && buf_len > len)
     {
-        FILE_name_WtoA( str.Buffer, -1, buffer, buf_len );
+        FILE_name_WtoA(str.Buffer, -1, buffer, buf_len);
     }
     else
     {
-        len++;  /* for terminating null */
-        if (buffer) *buffer = 0;
+        len++; /* for terminating null */
+        if (buffer)
+            *buffer = 0;
     }
-    if (str.Buffer != data) HeapFree( GetProcessHeap(), 0, str.Buffer );
+    if (str.Buffer != data)
+        HeapFree(GetProcessHeap(), 0, str.Buffer);
     return len;
 }
-
 
 /****************************************************************************
  *              GetDllDirectoryW   (KERNEL32.@)
  */
-DWORD WINAPI GetDllDirectoryW( DWORD buf_len, LPWSTR buffer )
+DWORD WINAPI GetDllDirectoryW(DWORD buf_len, LPWSTR buffer)
 {
     UNICODE_STRING str;
     NTSTATUS status;
 
     str.Buffer = buffer;
-    str.MaximumLength = min( buf_len, UNICODE_STRING_MAX_CHARS ) * sizeof(WCHAR);
-    status = LdrGetDllDirectory( &str );
-    if (status == STATUS_BUFFER_TOO_SMALL) status = STATUS_SUCCESS;
-    if (!set_ntstatus( status )) return 0;
+    str.MaximumLength = min(buf_len, UNICODE_STRING_MAX_CHARS) * sizeof(WCHAR);
+    status = LdrGetDllDirectory(&str);
+    if (status == STATUS_BUFFER_TOO_SMALL)
+        status = STATUS_SUCCESS;
+    if (!set_ntstatus(status))
+        return 0;
     return str.Length / sizeof(WCHAR);
 }
-
 
 /****************************************************************************
  *              SetDllDirectoryA   (KERNEL32.@)
  */
-BOOL WINAPI SetDllDirectoryA( LPCSTR dir )
+BOOL WINAPI SetDllDirectoryA(LPCSTR dir)
 {
     WCHAR *dirW = NULL;
     BOOL ret;
 
-    if (dir && !(dirW = FILE_name_AtoW( dir, TRUE ))) return FALSE;
-    ret = SetDllDirectoryW( dirW );
-    HeapFree( GetProcessHeap(), 0, dirW );
+    if (dir && !(dirW = FILE_name_AtoW(dir, TRUE)))
+        return FALSE;
+    ret = SetDllDirectoryW(dirW);
+    HeapFree(GetProcessHeap(), 0, dirW);
     return ret;
 }
-
 
 /****************************************************************************
  *              SetDllDirectoryW   (KERNEL32.@)
  */
-BOOL WINAPI SetDllDirectoryW( LPCWSTR dir )
+BOOL WINAPI SetDllDirectoryW(LPCWSTR dir)
 {
     UNICODE_STRING str;
 
-    RtlInitUnicodeString( &str, dir );
-    return set_ntstatus( LdrSetDllDirectory( &str ));
+    RtlInitUnicodeString(&str, dir);
+    return set_ntstatus(LdrSetDllDirectory(&str));
 }
-
 
 /***********************************************************************
  *             GetBinaryTypeW                     [KERNEL32.@]
@@ -162,47 +165,50 @@ BOOL WINAPI SetDllDirectoryW( LPCWSTR dir )
  *  ".com" and ".pif" files are only recognized by their file name extension,
  *  as per native Windows.
  */
-BOOL WINAPI GetBinaryTypeW( LPCWSTR name, LPDWORD type )
+BOOL WINAPI GetBinaryTypeW(LPCWSTR name, LPDWORD type)
 {
     HANDLE hfile, mapping;
     NTSTATUS status;
     const WCHAR *ptr;
 
-    TRACE("%s\n", debugstr_w(name) );
+    TRACE("%s\n", debugstr_w(name));
 
-    if (type == NULL) return FALSE;
-
-    hfile = CreateFileW( name, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0 );
-    if ( hfile == INVALID_HANDLE_VALUE )
+    if (type == NULL)
         return FALSE;
 
-    status = NtCreateSection( &mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY,
-                              NULL, NULL, PAGE_READONLY, SEC_IMAGE, hfile );
-    CloseHandle( hfile );
+    hfile = CreateFileW(name, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, 0);
+    if (hfile == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    status = NtCreateSection(&mapping, STANDARD_RIGHTS_REQUIRED | SECTION_QUERY,
+                             NULL, NULL, PAGE_READONLY, SEC_IMAGE, hfile);
+    CloseHandle(hfile);
 
     switch (status)
     {
     case STATUS_SUCCESS:
-        {
-            SECTION_IMAGE_INFORMATION info;
+    {
+        SECTION_IMAGE_INFORMATION info;
 
-            status = NtQuerySection( mapping, SectionImageInformation, &info, sizeof(info), NULL );
-            CloseHandle( mapping );
-            if (status) return FALSE;
-            if (info.ImageCharacteristics & IMAGE_FILE_DLL) return FALSE;
-            switch (info.Machine)
-            {
-            case IMAGE_FILE_MACHINE_I386:
-            case IMAGE_FILE_MACHINE_ARMNT:
-                *type = SCS_32BIT_BINARY;
-                return TRUE;
-            case IMAGE_FILE_MACHINE_AMD64:
-            case IMAGE_FILE_MACHINE_ARM64:
-                *type = SCS_64BIT_BINARY;
-                return TRUE;
-            }
+        status = NtQuerySection(mapping, SectionImageInformation, &info, sizeof(info), NULL);
+        CloseHandle(mapping);
+        if (status)
             return FALSE;
+        if (info.ImageCharacteristics & IMAGE_FILE_DLL)
+            return FALSE;
+        switch (info.Machine)
+        {
+        case IMAGE_FILE_MACHINE_I386:
+        case IMAGE_FILE_MACHINE_ARMNT:
+            *type = SCS_32BIT_BINARY;
+            return TRUE;
+        case IMAGE_FILE_MACHINE_AMD64:
+        case IMAGE_FILE_MACHINE_ARM64:
+            *type = SCS_64BIT_BINARY;
+            return TRUE;
         }
+        return FALSE;
+    }
     case STATUS_INVALID_IMAGE_WIN_16:
         *type = SCS_WOW_BINARY;
         return TRUE;
@@ -219,14 +225,14 @@ BOOL WINAPI GetBinaryTypeW( LPCWSTR name, LPDWORD type )
         *type = SCS_DOS_BINARY;
         return TRUE;
     case STATUS_INVALID_IMAGE_NOT_MZ:
-        if ((ptr = wcsrchr( name, '.' )))
+        if ((ptr = wcsrchr(name, '.')))
         {
-            if (!wcsicmp( ptr, L".com" ))
+            if (!wcsicmp(ptr, L".com"))
             {
                 *type = SCS_DOS_BINARY;
                 return TRUE;
             }
-            if (!wcsicmp( ptr, L".pif" ))
+            if (!wcsicmp(ptr, L".pif"))
             {
                 *type = SCS_PIF_BINARY;
                 return TRUE;
@@ -244,7 +250,7 @@ BOOL WINAPI GetBinaryTypeW( LPCWSTR name, LPDWORD type )
  *
  * See GetBinaryTypeW.
  */
-BOOL WINAPI GetBinaryTypeA( LPCSTR lpApplicationName, LPDWORD lpBinaryType )
+BOOL WINAPI GetBinaryTypeA(LPCSTR lpApplicationName, LPDWORD lpBinaryType)
 {
     ANSI_STRING app_nameA;
 
@@ -252,14 +258,54 @@ BOOL WINAPI GetBinaryTypeA( LPCSTR lpApplicationName, LPDWORD lpBinaryType )
 
     /* Sanity check.
      */
-    if ( lpApplicationName == NULL || lpBinaryType == NULL )
+    if (lpApplicationName == NULL || lpBinaryType == NULL)
         return FALSE;
 
     RtlInitAnsiString(&app_nameA, lpApplicationName);
-    if (!set_ntstatus( RtlAnsiStringToUnicodeString( &NtCurrentTeb()->StaticUnicodeString,
-                                                     &app_nameA, FALSE )))
+    if (!set_ntstatus(RtlAnsiStringToUnicodeString(&NtCurrentTeb()->StaticUnicodeString,
+                                                   &app_nameA, FALSE)))
         return FALSE;
     return GetBinaryTypeW(NtCurrentTeb()->StaticUnicodeString.Buffer, lpBinaryType);
+}
+
+static BOOL needs_int3_hack(void)
+{
+    static volatile int cache = -1;
+    TRACE("HACK: cache=%d\n", cache);
+
+    if (cache == -1)
+    {
+        const WCHAR *p, *name = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+        WCHAR env[8];
+        BOOL ret;
+
+        if ((p = wcsrchr(name, '/')))
+            name = p + 1;
+        if ((p = wcsrchr(name, '\\')))
+            name = p + 1;
+
+        ret = ((!wcsicmp(name, L"Endfield.exe")) ||
+               (!wcsicmp(name, L"EM-Win64-Shipping.exe")));
+
+        if (GetEnvironmentVariableW(L"PROTON_ENABLE_INT3_HACK", env, ARRAY_SIZE(env)))
+        {
+            TRACE("HACK: YES\n");
+            if (_wtoi(env) == 1)
+                ret = TRUE;
+        }
+
+        cache = ret;
+    }
+
+    return cache;
+}
+
+static void __attribute__((naked)) int3_stub(void)
+{
+    asm("int3\t\n"
+        "int3\t\n"
+        "int3\t\n"
+        "int3\t\n");
 }
 
 /***********************************************************************
@@ -275,22 +321,31 @@ BOOL WINAPI GetBinaryTypeA( LPCSTR lpApplicationName, LPDWORD lpBinaryType )
  *  Success: A pointer to the symbol in the process address space.
  *  Failure: NULL. Use GetLastError() to determine the cause.
  */
-FARPROC get_proc_address( HMODULE hModule, LPCSTR function )
+FARPROC get_proc_address(HMODULE hModule, LPCSTR function)
 {
-    FARPROC     fp;
+    // FIXME("get_proc_address kernel32 called for %s\n", (ULONG_PTR)function >> 16 ? function : "(ordinal)");
 
-    if (!hModule) hModule = NtCurrentTeb()->Peb->ImageBaseAddress;
+    FARPROC fp;
+
+    if (!hModule)
+        hModule = NtCurrentTeb()->Peb->ImageBaseAddress;
 
     if ((ULONG_PTR)function >> 16)
     {
-        ANSI_STRING     str;
+        ANSI_STRING str;
 
-        RtlInitAnsiString( &str, function );
-        if (!set_ntstatus( LdrGetProcedureAddress( hModule, &str, 0, (void**)&fp ))) return NULL;
-    }
-    else
-        if (!set_ntstatus( LdrGetProcedureAddress( hModule, NULL, LOWORD(function), (void**)&fp )))
+        if (needs_int3_hack() && (strcmp(function, "KiUserApcDispatcher") == 0 || strcmp(function, "KiUserCallbackDispatcher") == 0))
+        {
+            FIXME("HACK: returning int3 stub instead of %s\n", function);
+            return (FARPROC)&int3_stub;
+        }
+
+        RtlInitAnsiString(&str, function);
+        if (!set_ntstatus(LdrGetProcedureAddress(hModule, &str, 0, (void **)&fp)))
             return NULL;
+    }
+    else if (!set_ntstatus(LdrGetProcedureAddress(hModule, NULL, LOWORD(function), (void **)&fp)))
+        return NULL;
 
     return fp;
 }
@@ -305,54 +360,46 @@ FARPROC get_proc_address( HMODULE hModule, LPCSTR function )
  * This wrapper saves xmm0 - 3 to the stack.
  */
 #ifdef __arm64ec__
-FARPROC WINAPI __attribute__((naked)) GetProcAddress( HMODULE module, LPCSTR function )
+FARPROC WINAPI __attribute__((naked)) GetProcAddress(HMODULE module, LPCSTR function)
 {
-    asm( ".seh_proc \"#GetProcAddress\"\n\t"
-         "stp x29, x30, [sp, #-48]!\n\t"
-         ".seh_save_fplr_x 48\n\t"
-         ".seh_endprologue\n\t"
-         "stp d0, d1, [sp, #16]\n\t"
-         "stp d2, d3, [sp, #32]\n\t"
-         "bl \"#get_proc_address\"\n\t"
-         "ldp d0, d1, [sp, #16]\n\t"
-         "ldp d2, d3, [sp, #32]\n\t"
-         "ldp x29, x30, [sp], #48\n\t"
-         "ret\n\t"
-         ".seh_endproc" );
+    asm(".seh_proc \"#GetProcAddress\"\n\t"
+        "stp x29, x30, [sp, #-48]!\n\t"
+        ".seh_save_fplr_x 48\n\t"
+        ".seh_endprologue\n\t"
+        "stp d0, d1, [sp, #16]\n\t"
+        "stp d2, d3, [sp, #32]\n\t"
+        "bl \"#get_proc_address\"\n\t"
+        "ldp d0, d1, [sp, #16]\n\t"
+        "ldp d2, d3, [sp, #32]\n\t"
+        "ldp x29, x30, [sp], #48\n\t"
+        "ret\n\t"
+        ".seh_endproc");
 }
 #elif defined(__x86_64__)
-__ASM_GLOBAL_FUNC( GetProcAddress,
-                   ".byte 0x48\n\t"  /* hotpatch prolog */
-                   "pushq %rbp\n\t"
-                   __ASM_SEH(".seh_pushreg %rbp\n\t")
-                   __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t")
-                   __ASM_CFI(".cfi_rel_offset %rbp,0\n\t")
-                   "movq %rsp,%rbp\n\t"
-                   __ASM_SEH(".seh_setframe %rbp,0\n\t")
-                   __ASM_CFI(".cfi_def_cfa_register %rbp\n\t")
-                   __ASM_SEH(".seh_endprologue\n\t")
-                   "subq $0x60,%rsp\n\t"
-                   "andq $~15,%rsp\n\t"
-                   "movaps %xmm0,0x20(%rsp)\n\t"
-                   "movaps %xmm1,0x30(%rsp)\n\t"
-                   "movaps %xmm2,0x40(%rsp)\n\t"
-                   "movaps %xmm3,0x50(%rsp)\n\t"
-                   "call " __ASM_NAME("get_proc_address") "\n\t"
-                   "movaps 0x50(%rsp), %xmm3\n\t"
-                   "movaps 0x40(%rsp), %xmm2\n\t"
-                   "movaps 0x30(%rsp), %xmm1\n\t"
-                   "movaps 0x20(%rsp), %xmm0\n\t"
-                   "leaq 0(%rbp),%rsp\n\t"
-                   __ASM_CFI(".cfi_def_cfa_register %rsp\n\t")
-                   "popq %rbp\n\t"
-                   __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
-                   __ASM_CFI(".cfi_same_value %rbp\n\t")
-                   "ret" )
+__ASM_GLOBAL_FUNC(GetProcAddress,
+                  ".byte 0x48\n\t" /* hotpatch prolog */
+                  "pushq %rbp\n\t" __ASM_SEH(".seh_pushreg %rbp\n\t")
+                      __ASM_CFI(".cfi_adjust_cfa_offset 8\n\t")
+                          __ASM_CFI(".cfi_rel_offset %rbp,0\n\t") "movq %rsp,%rbp\n\t" __ASM_SEH(".seh_setframe %rbp,0\n\t")
+                              __ASM_CFI(".cfi_def_cfa_register %rbp\n\t")
+                                  __ASM_SEH(".seh_endprologue\n\t") "subq $0x60,%rsp\n\t"
+                                                                    "andq $~15,%rsp\n\t"
+                                                                    "movaps %xmm0,0x20(%rsp)\n\t"
+                                                                    "movaps %xmm1,0x30(%rsp)\n\t"
+                                                                    "movaps %xmm2,0x40(%rsp)\n\t"
+                                                                    "movaps %xmm3,0x50(%rsp)\n\t"
+                                                                    "call " __ASM_NAME("get_proc_address") "\n\t"
+                                                                                                           "movaps 0x50(%rsp), %xmm3\n\t"
+                                                                                                           "movaps 0x40(%rsp), %xmm2\n\t"
+                                                                                                           "movaps 0x30(%rsp), %xmm1\n\t"
+                                                                                                           "movaps 0x20(%rsp), %xmm0\n\t"
+                                                                                                           "leaq 0(%rbp),%rsp\n\t" __ASM_CFI(".cfi_def_cfa_register %rsp\n\t") "popq %rbp\n\t" __ASM_CFI(".cfi_adjust_cfa_offset -8\n\t")
+                                                                                                               __ASM_CFI(".cfi_same_value %rbp\n\t") "ret")
 #else /* __x86_64__ */
 
-FARPROC WINAPI GetProcAddress( HMODULE module, LPCSTR function )
+FARPROC WINAPI GetProcAddress(HMODULE module, LPCSTR function)
 {
-    return get_proc_address( module, function );
+    return get_proc_address(module, function);
 }
 
 #endif /* __x86_64__ */
