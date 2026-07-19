@@ -3179,6 +3179,16 @@ C_ASSERT( sizeof(struct process_info) <= sizeof(SYSTEM_PROCESS_INFORMATION) );
     return ret;
 }
 
+/* Cast the PEB to a structure that includes the Ldr pointer */
+typedef struct _PEB_INTERNAL
+{
+    unsigned char Reserved1[2];
+    unsigned char BeingDebugged;
+    unsigned char Reserved2[1];
+    void *Reserved3[2];
+    struct _PEB_LDR_DATA *Ldr; /* This is the member you need */
+} PEB_INTERNAL;
+
 /******************************************************************************
  *              NtQuerySystemInformation  (NTDLL.@)
  */
@@ -3417,36 +3427,74 @@ NTSTATUS WINAPI NtQuerySystemInformation( SYSTEM_INFORMATION_CLASS class,
         break;
     }
 
-    case SystemModuleInformation:  /* 11 */
+    case SystemModuleInformation: /* 11 */
     {
-        /* FIXME: return some fake info for now */
-        static const char *fake_modules[] =
-        {
-            "\\SystemRoot\\system32\\ntoskrnl.exe",
-            "\\SystemRoot\\system32\\hal.dll",
-            "\\SystemRoot\\system32\\drivers\\mountmgr.sys"
-        };
-
-        ULONG i;
+        ULONG alloc_count = 0;
+        ULONG i = 0;
+        PEB_INTERNAL *peb = (PEB_INTERNAL *)NtCurrentTeb()->Peb;
+        PLIST_ENTRY mark = &peb->Ldr->InLoadOrderModuleList;
+        PLIST_ENTRY entry;
         RTL_PROCESS_MODULES *smi = info;
 
-        len = offsetof( RTL_PROCESS_MODULES, Modules[ARRAY_SIZE(fake_modules)] );
+        // First pass: Count the total number of loaded modules
+        for (entry = mark->Flink; entry != mark; entry = entry->Flink)
+        {
+            alloc_count++;
+        }
+
+        len = offsetof(RTL_PROCESS_MODULES, Modules[alloc_count]);
         if (len <= size)
         {
-            memset( smi, 0, len );
-            for (i = 0; i < ARRAY_SIZE(fake_modules); i++)
+            memset(smi, 0, len);
+            for (entry = mark->Flink; entry != mark; entry = entry->Flink)
             {
+                LDR_DATA_TABLE_ENTRY *mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
                 RTL_PROCESS_MODULE_INFORMATION *sm = &smi->Modules[i];
-                sm->ImageBaseAddress = (char *)0x10000000 + 0x200000 * i;
-                sm->ImageSize = 0x200000;
+
+                sm->ImageBaseAddress = mod->DllBase;
+                sm->ImageSize = mod->SizeOfImage;
                 sm->LoadOrderIndex = i;
-                sm->LoadCount = 1;
-                strcpy( (char *)sm->Name, fake_modules[i] );
-                sm->NameOffset = strrchr( fake_modules[i], '\\' ) - fake_modules[i] + 1;
+                sm->LoadCount = 1; // Anti-cheats rarely validate the exact count, 1 is safe
+
+                if (mod->FullDllName.Buffer)
+                {
+                    char path[256] = {0};
+                    ULONG j;
+                    ULONG name_len = mod->FullDllName.Length / sizeof(WCHAR);
+
+                    if (name_len > 255)
+                        name_len = 255;
+
+                    // Safe internal conversion for system paths (typically pure ASCII)
+                    for (j = 0; j < name_len; j++)
+                    {
+                        path[j] = (char)mod->FullDllName.Buffer[j];
+                    }
+                    path[name_len] = '\0';
+
+                    // Anti-cheats expect NT-style kernel paths (\SystemRoot\ instead of C:\windows\)
+                    if (strncasecmp(path, "c:\\windows\\", 11) == 0)
+                    {
+                        snprintf((char *)sm->Name, sizeof(sm->Name), "\\SystemRoot\\%s", path + 11);
+                    }
+                    else
+                    {
+                        snprintf((char *)sm->Name, sizeof(sm->Name), "%s", path);
+                    }
+                }
+
+                // Determine the offset of the filename within the constructed path
+                char *slash = strrchr((char *)sm->Name, '\\');
+                sm->NameOffset = slash ? (slash - (char *)sm->Name + 1) : 0;
+
+                i++;
             }
             smi->ModulesCount = i;
         }
-        else ret = STATUS_INFO_LENGTH_MISMATCH;
+        else
+        {
+            ret = STATUS_INFO_LENGTH_MISMATCH;
+        }
 
         break;
     }

@@ -2519,6 +2519,53 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         {
             BYTE instr[4];
             unsigned int len = virtual_uninterrupted_read_memory((BYTE *)context.c.Rip, instr, sizeof(instr));
+
+            /* HACK: HoYoKProtect reads CR3 (0F 20 D9 = mov rcx, cr3) */
+            /* No REX prefix is used here for legacy registers like RCX */
+            if (len >= 3 && instr[0] == 0x0f && instr[1] == 0x20)
+            {
+                BYTE modrm = instr[2];
+                unsigned int cr = (modrm >> 3) & 7;
+                unsigned int reg = modrm & 7;
+
+                if (cr == 3) /* CR3 */
+                {
+                    DWORD64 fake_cr3 = 0x100000; /* Plausible physical base address */
+
+                    switch (reg)
+                    {
+                    case 0:
+                        context.c.Rax = fake_cr3;
+                        break;
+                    case 1:
+                        context.c.Rcx = fake_cr3;
+                        break; /* Handles the 0F 20 D9 */
+                    case 2:
+                        context.c.Rdx = fake_cr3;
+                        break;
+                    case 3:
+                        context.c.Rbx = fake_cr3;
+                        break;
+                    case 4:
+                        context.c.Rsp = fake_cr3;
+                        break;
+                    case 5:
+                        context.c.Rbp = fake_cr3;
+                        break;
+                    case 6:
+                        context.c.Rsi = fake_cr3;
+                        break;
+                    case 7:
+                        context.c.Rdi = fake_cr3;
+                        break;
+                    }
+
+                    context.c.Rip += 3;
+                    restore_context(&context, ucontext);
+                    return;
+                }
+            }
+
             unsigned int i = 0;
             if (len >= 1 && instr[i] >= 0x40 && instr[i] <= 0x4f)
                 i++; /* optional REX prefix */

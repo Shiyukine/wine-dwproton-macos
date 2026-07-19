@@ -14,6 +14,9 @@
 @ stdcall -arch=!i386 ExReleaseFastMutex(ptr)
 @ stdcall -fastcall ExReleaseFastMutexUnsafe(ptr)
 @ stdcall -fastcall ExReleaseResourceLite(ptr)
+@ stdcall ExEnterCriticalRegionAndAcquireResourceExclusive(ptr)
+@ stdcall ExEnterCriticalRegionAndAcquireResourceShared(ptr)
+@ stdcall ExReleaseResourceAndLeaveCriticalRegion(ptr)
 @ stub ExReleaseRundownProtection
 @ stub ExReleaseRundownProtectionEx
 @ stub ExRundownCompleted

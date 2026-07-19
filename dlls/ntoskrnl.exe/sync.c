@@ -1283,15 +1283,6 @@ void WINAPI ExReleaseResourceForThreadLite( ERESOURCE *resource, ERESOURCE_THREA
 }
 
 /***********************************************************************
- *           ExReleaseResourceLite  (NTOSKRNL.EXE.@)
- */
-DEFINE_FASTCALL1_WRAPPER( ExReleaseResourceLite )
-void FASTCALL ExReleaseResourceLite( ERESOURCE *resource )
-{
-    ExReleaseResourceForThreadLite( resource, (ERESOURCE_THREAD)KeGetCurrentThread() );
-}
-
-/***********************************************************************
  *           ExGetExclusiveWaiterCount   (NTOSKRNL.EXE.@)
  */
 ULONG WINAPI ExGetExclusiveWaiterCount( ERESOURCE *resource )

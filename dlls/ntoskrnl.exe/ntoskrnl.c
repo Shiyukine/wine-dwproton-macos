@@ -1067,6 +1067,47 @@ done:
 }
 
 /***********************************************************************
+ *           ExReleaseResourceLite  (NTOSKRNL.EXE.@)
+ */
+DEFINE_FASTCALL1_WRAPPER(ExReleaseResourceLite)
+void FASTCALL ExReleaseResourceLite(ERESOURCE *resource)
+{
+    ExReleaseResourceForThreadLite(resource, (ERESOURCE_THREAD)KeGetCurrentThread());
+}
+
+/***********************************************************************
+ *           ExEnterCriticalRegionAndAcquireResourceExclusive (NTOSKRNL.EXE.@)
+ */
+PVOID WINAPI ExEnterCriticalRegionAndAcquireResourceExclusive(ERESOURCE *resource)
+{
+    TRACE("(%p)\n", resource);
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(resource, TRUE);
+    return KeGetCurrentThread();
+}
+
+/***********************************************************************
+ *           ExEnterCriticalRegionAndAcquireResourceShared (NTOSKRNL.EXE.@)
+ */
+PVOID WINAPI ExEnterCriticalRegionAndAcquireResourceShared(ERESOURCE *resource)
+{
+    TRACE("(%p)\n", resource);
+    KeEnterCriticalRegion();
+    ExAcquireResourceSharedLite(resource, TRUE);
+    return KeGetCurrentThread();
+}
+
+/***********************************************************************
+ *           ExReleaseResourceAndLeaveCriticalRegion (NTOSKRNL.EXE.@)
+ */
+VOID WINAPI ExReleaseResourceAndLeaveCriticalRegion(ERESOURCE *resource)
+{
+    TRACE("(%p)\n", resource);
+    ExReleaseResourceLite(resource);
+    KeLeaveCriticalRegion();
+}
+
+/***********************************************************************
  *           IoAllocateDriverObjectExtension  (NTOSKRNL.EXE.@)
  */
 NTSTATUS WINAPI IoAllocateDriverObjectExtension( PDRIVER_OBJECT DriverObject,
@@ -1535,6 +1576,24 @@ static struct _OBJECT_TYPE driver_type =
 
 POBJECT_TYPE IoDriverObjectType = &driver_type;
 
+static void write_driver_list_file(void)
+{
+    char path[MAX_PATH];
+    FILE *f;
+    struct wine_driver *driver;
+
+    FIXME("write_driver_list_file called\n");
+
+    GetSystemDirectoryA(path, sizeof(path));
+    strcat(path, "\\wine_drivers.lst");
+
+    if (!(f = fopen(path, "w")))
+        return;
+    WINE_RB_FOR_EACH_ENTRY(driver, &wine_drivers, struct wine_driver, entry)
+    fprintf(f, "%ls\n", driver->driver_obj.DriverName.Buffer);
+    fclose(f);
+    FIXME("write_driver_list_file done\n");
+}
 
 /***********************************************************************
  *           IoCreateDriver   (NTOSKRNL.EXE.@)
@@ -1568,6 +1627,7 @@ NTSTATUS WINAPI IoCreateDriver( UNICODE_STRING *name, PDRIVER_INITIALIZE init )
     EnterCriticalSection( &drivers_cs );
     if (wine_rb_put( &wine_drivers, &driver->driver_obj.DriverName, &driver->entry ))
         ERR( "failed to insert driver %s in tree\n", debugstr_us(name) );
+    write_driver_list_file();
     LeaveCriticalSection( &drivers_cs );
 
     status = driver->driver_obj.DriverInit( &driver->driver_obj, &driver->driver_extension.ServiceKeyName );
@@ -1596,6 +1656,7 @@ void WINAPI IoDeleteDriver( DRIVER_OBJECT *driver_object )
 
     EnterCriticalSection( &drivers_cs );
     wine_rb_remove_key( &wine_drivers, &driver_object->DriverName );
+    write_driver_list_file();
     LeaveCriticalSection( &drivers_cs );
 
     ObDereferenceObject( driver_object );
@@ -3123,10 +3184,15 @@ BOOLEAN WINAPI MmIsAddressValid(PVOID VirtualAddress)
  */
 PHYSICAL_ADDRESS WINAPI MmGetPhysicalAddress(void *virtual_address)
 {
-    PHYSICAL_ADDRESS ret;
-    FIXME("(%p): semi-stub\n", virtual_address);
-    ret.QuadPart = (ULONG_PTR)virtual_address;
-    return ret;
+    PHYSICAL_ADDRESS phys_addr;
+    static int once;
+
+    if (!once++)
+        FIXME("semi-stub: faking physical address for %p\n", virtual_address);
+
+    /* Just return the virtual address stripped down, or our fake base */
+    phys_addr.QuadPart = (ULONG_PTR)virtual_address;
+    return phys_addr;
 }
 
 PHYSICAL_MEMORY_RANGE *WINAPI MmGetPhysicalMemoryRanges(void)
@@ -3152,9 +3218,28 @@ PHYSICAL_MEMORY_RANGE *WINAPI MmGetPhysicalMemoryRanges(void)
  */
 void *WINAPI MmGetVirtualForPhysical(PHYSICAL_ADDRESS addr)
 {
-    ULONG_PTR ret = addr.QuadPart;
-    FIXME("(%p): semi-stub!\n", (void *)ret);
-    return (void *)ret;
+    /* 512 entries of 8 bytes = 4096 bytes (a full page table) */
+    static ULONG64 fake_physical_page[512];
+    static int once;
+
+    if (!once)
+    {
+        int i;
+        /* 0x100000 is our fake physical base.
+         * 0x63 = Present, R/W, Accessed, Dirty */
+        for (i = 0; i < 512; i++)
+            fake_physical_page[i] = 0x100000 | 0x63;
+        once = 1;
+    }
+
+    /* If the driver is reading our fake CR3, give it the recursive table */
+    if (addr.QuadPart == 0x100000)
+    {
+        return fake_physical_page;
+    }
+
+    /* For MDL arrays and general requests, return the 1:1 mapping */
+    return (PVOID)(ULONG_PTR)addr.QuadPart;
 }
 
 /***********************************************************************
@@ -3227,11 +3312,32 @@ PVOID WINAPI MmPageEntireDriver(PVOID AddrInSection)
 /***********************************************************************
  *           MmProbeAndLockPages  (NTOSKRNL.EXE.@)
  */
-void WINAPI MmProbeAndLockPages(PMDLX MemoryDescriptorList, KPROCESSOR_MODE AccessMode, LOCK_OPERATION Operation)
+void WINAPI MmProbeAndLockPages(PMDL mdl, KPROCESSOR_MODE AccessMode, LOCK_OPERATION Operation)
 {
-    FIXME("(%p, %u, %u): stub\n", MemoryDescriptorList, AccessMode, Operation);
-}
+    ULONG_PTR *pfn_array;
+    ULONG_PTR va;
+    ULONG i, num_pages;
 
+    FIXME("semi-stub: faking physical page array for MDL %p\n", mdl);
+
+    if (!mdl)
+        return;
+
+    mdl->MdlFlags |= 0x0004; /* MDL_PAGES_LOCKED */
+
+    /* The PFN array sits immediately after the MDL structure in memory */
+    pfn_array = (ULONG_PTR *)(mdl + 1);
+    va = (ULONG_PTR)mdl->StartVa;
+
+    /* Calculate how many pages this MDL spans */
+    num_pages = (mdl->ByteOffset + mdl->ByteCount + 4095) / 4096;
+
+    /* Populate array with 1:1 mapped physical addresses (VirtualAddr >> 12) */
+    for (i = 0; i < num_pages; i++)
+    {
+        pfn_array[i] = (va + (i * 4096)) >> 12;
+    }
+}
 
 /***********************************************************************
  *           MmResetDriverPaging   (NTOSKRNL.EXE.@)
@@ -3245,11 +3351,12 @@ void WINAPI MmResetDriverPaging(PVOID AddrInSection)
 /***********************************************************************
  *           MmUnlockPages  (NTOSKRNL.EXE.@)
  */
-void WINAPI  MmUnlockPages(PMDLX MemoryDescriptorList)
+void WINAPI MmUnlockPages(PMDL mdl)
 {
-    FIXME("(%p): stub\n", MemoryDescriptorList);
+    FIXME("semi-stub: %p\n", mdl);
+    if (mdl)
+        mdl->MdlFlags &= ~0x0004; /* Remove MDL_PAGES_LOCKED */
 }
-
 
 /***********************************************************************
  *           MmUnmapIoSpace   (NTOSKRNL.EXE.@)
@@ -4979,11 +5086,29 @@ NTSTATUS WINAPI KdChangeOption(ULONG option, ULONG in_size, PVOID in_buffer,
 }
 
 NTSTATUS WINAPI KeCapturePersistentThreadState(CONTEXT *context, PKTHREAD thread, ULONG code,
-                                               ULONG param1, ULONG param2, ULONG param3, ULONG param4, void *addr)
+                                               ULONG param1, ULONG param2, ULONG param3,
+                                               ULONG param4, void *addr)
 {
-    FIXME("%p %p %lu %lu %lu %lu %lu %p", context, thread, code, param1, param2, param3, param4, addr);
+    NTSTATUS status;
+    HANDLE handle, id;
 
-    return STATUS_NOT_IMPLEMENTED;
+    FIXME("(%p, %p, %lu, %lu, %lu, %lu, %lu, %p): capturing real thread context\n",
+          context, thread, code, param1, param2, param3, param4, addr);
+
+    if (!thread)
+        thread = (PKTHREAD)PsGetCurrentThread();
+
+    id = PsGetThreadId((PETHREAD)thread);
+    if (!(handle = OpenThread(THREAD_ALL_ACCESS, FALSE, HandleToUlong(id))))
+        return STATUS_NOT_FOUND;
+
+    context->ContextFlags = CONTEXT_FULL;
+    status = NtGetContextThread(handle, context);
+    NtClose(handle);
+
+    ERR("KeCapturePersistentThreadState: NtGetContextThread returned %08lx\n", status);
+
+    return status;
 }
 
 NTSTATUS WINAPI KdDisableDebugger(void)
