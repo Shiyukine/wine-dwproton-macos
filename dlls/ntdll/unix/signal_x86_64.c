@@ -2527,7 +2527,17 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
                 BYTE modrm = instr[i + 2];
                 if ((modrm >> 6) == 3) /* mod == 11: register-direct form */
                 {
-                    context.c.Rip += i + 3;
+                    /* HACK: this NOP faults spuriously under Rosetta 2, sometimes
+                     * repeatedly inside spin loops. Patch it in place to plain 0x90
+                     * NOPs (same length, functionally identical) so it never
+                     * faults again, instead of paying a trap round-trip every
+                     * single execution. */
+                    SIZE_T patch_len = i + 3;
+                    long page_size = sysconf(_SC_PAGESIZE);
+                    void *page_start = (void *)((uintptr_t)context.c.Rip & ~(page_size - 1));
+                    mprotect(page_start, page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+                    memset((void *)context.c.Rip, 0x90, patch_len);
+                    mprotect(page_start, page_size, PROT_READ | PROT_EXEC);
                     restore_context(&context, ucontext);
                     return;
                 }
