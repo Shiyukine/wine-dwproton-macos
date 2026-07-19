@@ -1615,6 +1615,8 @@ static void setup_raise_exception( ucontext_t *sigcontext, EXCEPTION_RECORD *rec
     rsp = is_16bit(sigcontext) ? get_wow_teb( NtCurrentTeb() )->SystemReserved1[0] : RSP_sig(sigcontext);
     rsp &= ~(ULONG_PTR)15;
     stack_size = rsp - ((rsp - sizeof(*stack) - xstate_size) & ~(ULONG_PTR)63);
+    ERR("setup_raise_exception: rsp=%p sizeof(*stack)=%lu xstate_size=%u stack_size=%lu\n",
+        (void *)rsp, (unsigned long)sizeof(*stack), xstate_size, (unsigned long)stack_size);
     stack = virtual_setup_exception( (void *)rsp, stack_size, rec );
     stack->rec               = *rec;
     stack->context           = *context;
@@ -2019,7 +2021,14 @@ static inline BOOL emulate_xgetbv( ucontext_t *sigcontext, CONTEXT *context )
     }
 
     RDX_sig(sigcontext) = 0;
-    RAX_sig(sigcontext) = 0x07; /* fpu/mmx, sse */
+    if (sequoia_or_later)
+    {
+        /* Arguably we should only claim AVX support if ROSETTA_ADVERTISE_AVX is
+           set, but presumably apps will also check cpuid. */
+        RAX_sig(sigcontext) = 0xe7; /* fpu/mmx, sse, avx, full avx-512 */
+    }
+    else
+        RAX_sig(sigcontext) = 0x07; /* fpu/mmx, sse */
 
     RIP_sig(sigcontext) += 3;
     TRACE_(seh)( "emulated an XGETBV instruction\n" );
@@ -2517,19 +2526,32 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
          * translation glitch: skip over it and resume, rather than raising
          * any exception. */
         {
-            BYTE instr[4];
-            unsigned int len = virtual_uninterrupted_read_memory((BYTE *)context.c.Rip, instr, sizeof(instr));
-            unsigned int i = 0;
-            if (len >= 1 && instr[i] >= 0x40 && instr[i] <= 0x4f)
-                i++; /* optional REX prefix */
-            if (len >= i + 3 && instr[i] == 0x0f && instr[i + 1] == 0x1f)
+            if (is_rosetta2)
             {
-                BYTE modrm = instr[i + 2];
-                if ((modrm >> 6) == 3) /* mod == 11: register-direct form */
+                BYTE instr[4];
+                unsigned int len = virtual_uninterrupted_read_memory((BYTE *)context.c.Rip, instr, sizeof(instr));
+                unsigned int i = 0;
+                if (len >= 1 && instr[i] >= 0x40 && instr[i] <= 0x4f)
+                    i++; /* optional REX prefix */
+                if (len >= i + 3 && instr[i] == 0x0f && instr[i + 1] == 0x1f)
                 {
-                    context.c.Rip += i + 3;
-                    restore_context(&context, ucontext);
-                    return;
+                    BYTE modrm = instr[i + 2];
+                    if ((modrm >> 6) == 3)
+                    {
+                        /* HACK: this NOP faults spuriously under Rosetta 2, sometimes
+                         * repeatedly inside spin loops. Patch it in place to plain 0x90
+                         * NOPs (same length, functionally identical) so it never
+                         * faults again, instead of paying a trap round-trip every
+                         * single execution. */
+                        SIZE_T patch_len = i + 3;
+                        long page_size = sysconf(_SC_PAGESIZE);
+                        void *page_start = (void *)((uintptr_t)context.c.Rip & ~(page_size - 1));
+                        mprotect(page_start, page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+                        memset((void *)context.c.Rip, 0x90, patch_len);
+                        mprotect(page_start, page_size, PROT_READ | PROT_EXEC);
+                        restore_context(&context, ucontext);
+                        return;
+                    }
                 }
             }
         }

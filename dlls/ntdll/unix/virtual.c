@@ -4541,6 +4541,17 @@ NTSTATUS virtual_clear_tls_index(ULONG index)
     return STATUS_SUCCESS;
 }
 
+static BOOL is_rosetta2(void)
+{
+    char buffer[64];
+    NTSTATUS status = NtQuerySystemInformation(SystemProcessorBrandString, buffer, sizeof(buffer), NULL);
+
+    if (status || !strstr(buffer, "VirtualApple"))
+        return FALSE;
+
+    return TRUE;
+}
+
 /***********************************************************************
  *           virtual_alloc_thread_stack
  */
@@ -4588,7 +4599,7 @@ NTSTATUS virtual_alloc_thread_stack(INITIAL_TEB *stack, ULONG_PTR limit_low, ULO
     stack->OldStackLimit = 0;
     stack->DeallocationStack = view->base;
     stack->StackBase = (char *)view->base + view->size;
-    stack->StackLimit = (char *)view->base;
+    stack->StackLimit = (char *)view->base + (guard_page && !is_rosetta2() ? 2 * host_page_size : 0);
 done:
     server_leave_uninterrupted_section(&virtual_mutex, &sigset);
     return status;
@@ -4731,6 +4742,8 @@ static NTSTATUS grow_thread_stack(char *page, struct thread_stack_info *stack_in
     mprotect_range(page, host_page_size, 0, 0);
     if (page >= stack_info->start + host_page_size + stack_info->guaranteed)
     {
+        ERR("grow_thread_stack: INSIDE GUARANTEED, page=%p start=%p guaranteed=%lu host_page_size=%u\n",
+            page, stack_info->start, (unsigned long)stack_info->guaranteed, host_page_size);
         set_page_vprot_bits(page - host_page_size, host_page_size, VPROT_COMMITTED | VPROT_GUARD, 0);
         mprotect_range(page - host_page_size, host_page_size, 0, 0);
     }
