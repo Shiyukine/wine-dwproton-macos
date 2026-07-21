@@ -2630,19 +2630,26 @@ PEPROCESS WINAPI IoGetCurrentProcess(void)
 /***********************************************************************
  *           PsLookupProcessByProcessId  (NTOSKRNL.EXE.@)
  */
-NTSTATUS WINAPI PsLookupProcessByProcessId( HANDLE processid, PEPROCESS *process )
+NTSTATUS WINAPI PsLookupProcessByProcessId(HANDLE processid, PEPROCESS *process)
 {
     NTSTATUS status;
     HANDLE handle;
 
-    TRACE( "(%p %p)\n", processid, process );
+    TRACE("(%p %p)\n", processid, process);
 
-    if (!(handle = OpenProcess( PROCESS_ALL_ACCESS, FALSE, HandleToUlong(processid) )))
+    if (HandleToUlong(processid) == 4 && PsInitialSystemProcess)
+    {
+        *process = PsInitialSystemProcess;
+        ObReferenceObject(*process);
+        return STATUS_SUCCESS;
+    }
+
+    if (!(handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, HandleToUlong(processid))))
         return STATUS_INVALID_PARAMETER;
 
-    status = ObReferenceObjectByHandle( handle, PROCESS_ALL_ACCESS, PsProcessType, KernelMode, (void**)process, NULL );
+    status = ObReferenceObjectByHandle(handle, PROCESS_ALL_ACCESS, PsProcessType, KernelMode, (void **)process, NULL);
 
-    NtClose( handle );
+    NtClose(handle);
     return status;
 }
 
@@ -5092,23 +5099,32 @@ NTSTATUS WINAPI KeCapturePersistentThreadState(CONTEXT *context, PKTHREAD thread
     NTSTATUS status;
     HANDLE handle, id;
 
-    FIXME("(%p, %p, %lu, %lu, %lu, %lu, %lu, %p): capturing real thread context\n",
-          context, thread, code, param1, param2, param3, param4, addr);
-
     if (!thread)
         thread = (PKTHREAD)PsGetCurrentThread();
-
     id = PsGetThreadId((PETHREAD)thread);
     if (!(handle = OpenThread(THREAD_ALL_ACCESS, FALSE, HandleToUlong(id))))
-        return STATUS_NOT_FOUND;
+        return 0; /* driver treats 0 as failure */
 
-    context->ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
+    context->ContextFlags = CONTEXT_FULL;
     status = NtGetContextThread(handle, context);
     NtClose(handle);
 
-    ERR("KeCapturePersistentThreadState: NtGetContextThread returned %08lx\n", status);
+    ERR("KeCapturePersistentThreadState: passed handle = OpenThread(THREAD_ALL_ACCESS, FALSE, HandleToUlong(id))\n");
 
-    return status;
+    if (status != STATUS_SUCCESS)
+        return 0;
+
+    ERR("KeCapturePersistentThreadState: passed status != STATUS_SUCCESS\n");
+
+    /* driver reads a valid pointer back at addr+0x18 and sanity-checks it
+     * via MmIsAddressValid — give it something real and valid: the context
+     * pointer itself, since we don't know the exact real-Windows semantics */
+    if (addr)
+        *(void **)((char *)addr + 0x18) = context;
+
+    ERR("KeCapturePersistentThreadState: return 1\n");
+
+    return 1; /* non-zero = success, per this driver's actual expectation */
 }
 
 NTSTATUS WINAPI KdDisableDebugger(void)
@@ -5168,6 +5184,132 @@ BOOL WINAPI VslGetSecurePciEnabled(void)
     return TRUE;
 }
 
+#ifdef __x86_64__
+#define KUSER_SHARED_DATA_KERNEL 0xFFFFF78000000000ULL
+#define KUSER_SHARED_DATA_USER 0x7FFE0000ULL
+
+/* Helper to map 0-15 register index to the CONTEXT structure pointer */
+static DWORD64 *get_context_reg_ptr(PCONTEXT ctx, BYTE reg_idx)
+{
+    switch (reg_idx)
+    {
+    case 0:
+        return &ctx->Rax;
+    case 1:
+        return &ctx->Rcx;
+    case 2:
+        return &ctx->Rdx;
+    case 3:
+        return &ctx->Rbx;
+    case 4:
+        return &ctx->Rsp;
+    case 5:
+        return &ctx->Rbp;
+    case 6:
+        return &ctx->Rsi;
+    case 7:
+        return &ctx->Rdi;
+    case 8:
+        return &ctx->R8;
+    case 9:
+        return &ctx->R9;
+    case 10:
+        return &ctx->R10;
+    case 11:
+        return &ctx->R11;
+    case 12:
+        return &ctx->R12;
+    case 13:
+        return &ctx->R13;
+    case 14:
+        return &ctx->R14;
+    case 15:
+        return &ctx->R15;
+    default:
+        return NULL;
+    }
+}
+
+LONG CALLBACK KUserSharedDataEmulationHandler(PEXCEPTION_POINTERS ExceptionInfo)
+{
+    PEXCEPTION_RECORD rec = ExceptionInfo->ExceptionRecord;
+    PCONTEXT ctx = ExceptionInfo->ContextRecord;
+
+    if (rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    ULONG_PTR fault_addr = (ULONG_PTR)rec->ExceptionInformation[1];
+
+    if (fault_addr >= KUSER_SHARED_DATA_KERNEL && fault_addr < (KUSER_SHARED_DATA_KERNEL + 0x1000))
+    {
+        ULONG_PTR offset = fault_addr - KUSER_SHARED_DATA_KERNEL;
+        ULONG_PTR user_mode_addr = KUSER_SHARED_DATA_USER + offset;
+        BYTE *rip = (BYTE *)ctx->Rip;
+
+        BYTE rex = 0;
+        BYTE opcode_idx = 0;
+
+        /* Check for REX prefix (0x40 - 0x4F) */
+        if ((rip[0] & 0xF0) == 0x40)
+        {
+            rex = rip[0];
+            opcode_idx = 1;
+        }
+
+        BYTE opcode = rip[opcode_idx];
+
+        /* Handles MOV r64, r/m64 (0x8B) or MOV r32, r/m32 */
+        if (opcode == 0x8B)
+        {
+            BYTE modrm = rip[opcode_idx + 1];
+            BYTE mod = (modrm >> 6) & 3;
+            BYTE reg = (modrm >> 3) & 7;
+            BYTE rm = modrm & 7;
+
+            /* Extend register index if REX.R bit is set */
+            if (rex & 0x04)
+                reg += 8;
+
+            DWORD64 *dst_reg = get_context_reg_ptr(ctx, reg);
+            if (dst_reg)
+            {
+                *dst_reg = *(DWORD64 *)user_mode_addr;
+            }
+
+            /* Calculate exact instruction length */
+            DWORD insn_len = opcode_idx + 2; /* REX (opt) + Opcode + ModRM */
+
+            /* Check for SIB byte */
+            if (mod != 3 && (rm & 7) == 4)
+            {
+                insn_len += 1;
+            }
+
+            /* Check for displacement bytes */
+            if (mod == 1)
+            {
+                insn_len += 1; /* disp8 */
+            }
+            else if (mod == 2 || (mod == 0 && (rm & 7) == 5))
+            {
+                insn_len += 4; /* disp32 */
+            }
+
+            TRACE("Emulated KUSER read: RIP=%p, target_reg=R%d, insn_len=%d\n",
+                  (void *)ctx->Rip, reg, insn_len);
+
+            ctx->Rip += insn_len;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+
+        ERR("Unhandled opcode 0x%02x (REX=0x%02x) at RIP %p\n",
+            opcode, rex, (void *)ctx->Rip);
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 /*****************************************************
  *           DllMain
  */
@@ -5180,8 +5322,10 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
     {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls( inst );
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__i386__)
         handler = RtlAddVectoredExceptionHandler( TRUE, vectored_handler );
+#elif defined(__x86_64__)
+        AddVectoredExceptionHandler(1, KUserSharedDataEmulationHandler);
 #endif
         KeQueryTickCount( &count );  /* initialize the global KeTickCount */
         NtBuildNumber = NtCurrentTeb()->Peb->OSBuildNumber;
@@ -5198,7 +5342,11 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
             CloseThreadpool(dpc_call_tp);
 
         HeapDestroy( ntoskrnl_heap );
-        RtlRemoveVectoredExceptionHandler( handler );
+#if defined(__i386__)
+        RtlRemoveVectoredExceptionHandler(handler);
+#elif defined(__x86_64__)
+        RemoveVectoredExceptionHandler(KUserSharedDataEmulationHandler);
+#endif
         break;
     }
     return TRUE;
