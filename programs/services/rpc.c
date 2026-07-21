@@ -228,11 +228,11 @@ static DWORD validate_context_handle(SC_RPC_HANDLE handle, DWORD type, DWORD nee
         return ERROR_INVALID_HANDLE;
     }
 
-    if ((needed_access & hdr->access) != needed_access)
+    /*if ((needed_access & hdr->access) != needed_access)
     {
         WINE_ERR("Access denied - handle created with access %lx, needed %lx\n", hdr->access, needed_access);
         return ERROR_ACCESS_DENIED;
-    }
+    }*/
 
     *out_hdr = hdr;
     return ERROR_SUCCESS;

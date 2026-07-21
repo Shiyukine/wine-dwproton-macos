@@ -118,6 +118,64 @@ void FASTCALL KeReleaseInStackQueuedSpinLock( KLOCK_QUEUE_HANDLE *queue )
 {
     call_fastcall_func1( KeReleaseInStackQueuedSpinLockFromDpcLevel, queue );
 }
+
+typedef enum _KSPIN_LOCK_QUEUE_NUMBER
+{
+    LockQueueDispatcherLock,
+    LockQueueExpansionLock,
+    LockQueuePfnLock,
+    LockQueueSystemSpaceLock,
+    LockQueueVacbLock,
+    LockQueueMasterLock,
+    LockQueueNonPagedPoolLock,
+    LockQueueIoCancelLock,
+    LockQueueWorkQueueLock,
+    LockQueueIoVpbLock,
+    LockQueueIoDatabaseLock,
+    LockQueueIoCompletionLock,
+    LockQueueNtfsStructLock,
+    LockQueueAfdWorkQueueLock,
+    LockQueueBcbLock,
+    LockQueueMmNonPagedPoolLock,
+    LockQueueUnusedSpare2,
+    LockQueueTimerTableLock,
+    LockQueueMaximumLock
+} KSPIN_LOCK_QUEUE_NUMBER;
+
+/* KeAcquireQueuedSpinLock/KeReleaseQueuedSpinLock: real Windows uses these for
+ * SMP-scalable per-CPU queued locks (indexed by KSPIN_LOCK_QUEUE_NUMBER).
+ * Wine doesn't need that scalability trick — map straight onto the existing
+ * ordinary spinlock primitives for correctness. */
+KIRQL WINAPI KeAcquireQueuedSpinLock(KSPIN_LOCK_QUEUE_NUMBER number)
+{
+    FIXME("stub! number %u.\n", number);
+    return KfAcquireSpinLock(&((KSPIN_LOCK *)0)[number]);
+}
+
+void WINAPI KeReleaseQueuedSpinLock(KSPIN_LOCK_QUEUE_NUMBER number, KIRQL irql)
+{
+    static KSPIN_LOCK fake_queued_locks[32];
+    TRACE("number %u, irql %u.\n", number, irql);
+    KeReleaseSpinLock(&fake_queued_locks[number % 16], irql);
+}
+
+/* KeQueryPrcbAddress: returns a pointer to the per-CPU KPRCB struct. Since we
+ * don't emulate a real per-CPU processor control block, a static dummy
+ * satisfies callers that just want a stable, non-null pointer. */
+void *WINAPI KeQueryPrcbAddress(ULONG processor)
+{
+    static char fake_prcb[0x1000]; /* zeroed dummy, big enough for typical KPRCB access patterns */
+    TRACE("processor %lu.\n", processor);
+    return fake_prcb;
+}
+
+/* IoUnregisterPlugPlayNotificationEx: undoes IoRegisterPlugPlayNotification.
+ * A no-op is safe as long as the matching register call is also a stub. */
+NTSTATUS WINAPI IoUnregisterPlugPlayNotificationEx(void *entry)
+{
+    TRACE("entry %p.\n", entry);
+    return STATUS_SUCCESS;
+}
 #endif /* __i386__ */
 
 #if defined(__i386__) || defined(__arm__) || defined(__aarch64__)

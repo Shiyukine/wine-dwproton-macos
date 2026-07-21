@@ -5102,7 +5102,7 @@ NTSTATUS WINAPI KeCapturePersistentThreadState(CONTEXT *context, PKTHREAD thread
     if (!(handle = OpenThread(THREAD_ALL_ACCESS, FALSE, HandleToUlong(id))))
         return STATUS_NOT_FOUND;
 
-    context->ContextFlags = CONTEXT_FULL;
+    context->ContextFlags = CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS;
     status = NtGetContextThread(handle, context);
     NtClose(handle);
 

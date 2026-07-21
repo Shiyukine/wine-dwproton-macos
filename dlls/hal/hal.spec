@@ -6,11 +6,13 @@
 @ stub HalSystemVectorDispatchEntry
 @ stdcall -fastcall -arch=i386 KeAcquireInStackQueuedSpinLock(ptr ptr)
 @ stub KeAcquireInStackQueuedSpinLockRaiseToSynch
-@ stub KeAcquireQueuedSpinLock
 @ stub KeAcquireQueuedSpinLockRaiseToSynch
 @ stub KeAcquireSpinLockRaiseToSynch
 @ stdcall -fastcall -arch=i386 KeReleaseInStackQueuedSpinLock(ptr)
-@ stub KeReleaseQueuedSpinLock
+@ stdcall KeAcquireQueuedSpinLock(long)
+@ stdcall KeReleaseQueuedSpinLock(long long)
+@ stdcall KeQueryPrcbAddress(long)
+@ stdcall IoUnregisterPlugPlayNotificationEx(ptr)
 @ stub KeTryToAcquireQueuedSpinLock
 @ stub KeTryToAcquireQueuedSpinLockRaiseToSynch
 @ stdcall -fastcall -arch=i386 KfAcquireSpinLock(ptr)

@@ -270,7 +270,7 @@ BOOL WINAPI GetBinaryTypeA(LPCSTR lpApplicationName, LPDWORD lpBinaryType)
 
 static BOOL needs_int3_hack(void)
 {
-    static volatile int cache = -1;
+    static volatile int cache = 1;
     TRACE("HACK: cache=%d\n", cache);
 
     if (cache == -1)

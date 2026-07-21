@@ -62,7 +62,7 @@ static CRITICAL_SECTION exclusive_datafile_list_section = { &critsect_debug, -1,
 
 static BOOL needs_int3_hack(void)
 {
-    static volatile int cache = -1;
+    static volatile int cache = 1;
     TRACE("HACK: cache=%d\n", cache);
 
     if (cache == -1)
