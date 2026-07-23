@@ -159,6 +159,14 @@ int WINAPI getaddrinfo( const char *node, const char *service,
 
     TRACE( "node %s, service %s, hints %p\n", debugstr_a(node), debugstr_a(service), hints );
 
+    /* --- TELEMETRY BLOCK --- */
+    if (node && strstr(node, "globaldp-prod-os01.starrails.com"))
+    {
+        WARN("HSR: Blocked DNS resolution for: %s\n", node);
+        return WSAHOST_NOT_FOUND;
+    }
+    /* ----------------------- */
+
     *info = NULL;
 
     if (!node && !service)
@@ -543,6 +551,14 @@ int WINAPI GetAddrInfoW(const WCHAR *nodename, const WCHAR *servname, const ADDR
 
     TRACE( "nodename %s, servname %s, hints %p, result %p\n",
            debugstr_w(nodename), debugstr_w(servname), hints, res );
+
+    /* --- TELEMETRY BLOCK --- */
+    if (nodename && wcsstr(nodename, L"globaldp-prod-os01.starrails.com"))
+    {
+        WARN("HSR: Blocked wide DNS resolution for: %s\n", debugstr_w(nodename));
+        return WSAHOST_NOT_FOUND;
+    }
+    /* ----------------------- */
 
     *res = NULL;
     if (hints) hintsA = addrinfo_WtoA( hints );
