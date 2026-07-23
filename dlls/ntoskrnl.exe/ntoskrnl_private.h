@@ -60,6 +60,7 @@ struct _EPROCESS
     DWORD session_id;
     PACCESS_TOKEN token;
     char imageName[15];
+    char reserved[0x1000]; /* pad well past any offset we've observed being read */
 };
 
 struct _KTHREAD

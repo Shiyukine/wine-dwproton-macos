@@ -1362,7 +1362,7 @@ DEVICE_OBJECT* WINAPI IoGetAttachedDevice( DEVICE_OBJECT *device )
 {
     DEVICE_OBJECT *result = device;
 
-    TRACE( "(%p)\n", device );
+    TRACE("(%p), called at %p\n", device, __builtin_return_address(0));
 
     while (result->AttachedDevice)
         result = result->AttachedDevice;
@@ -2624,6 +2624,7 @@ POBJECT_TYPE PsProcessType = &process_type;
  */
 PEPROCESS WINAPI IoGetCurrentProcess(void)
 {
+    TRACE("()\n");
     return KeGetCurrentThread()->process;
 }
 
@@ -2635,7 +2636,7 @@ NTSTATUS WINAPI PsLookupProcessByProcessId(HANDLE processid, PEPROCESS *process)
     NTSTATUS status;
     HANDLE handle;
 
-    TRACE("(%p %p)\n", processid, process);
+    TRACE("(%p %p) called at %p\n", processid, process, __builtin_return_address(0));
 
     if (HandleToUlong(processid) == 4 && PsInitialSystemProcess)
     {
@@ -2763,6 +2764,8 @@ PRKTHREAD WINAPI KeGetCurrentThread(void)
 {
     struct _KTHREAD *thread = NtCurrentTeb()->Instrumentation[1];
 
+    TRACE("()\n");
+
     if (!thread)
     {
         HANDLE handle = GetCurrentThread();
@@ -2785,6 +2788,7 @@ PRKTHREAD WINAPI KeGetCurrentThread(void)
  */
 KIRQL WINAPI KeGetCurrentIrql(void)
 {
+    TRACE("()\n");
     /* Wine does not emulate real kernel IRQL; default to PASSIVE_LEVEL (0). */
     return 0;
 }
@@ -2887,6 +2891,8 @@ KAFFINITY WINAPI KeQueryActiveProcessors( void )
 {
     DWORD_PTR affinity_mask;
 
+    TRACE("()\n");
+
     GetProcessAffinityMask( GetCurrentProcess(), NULL, &affinity_mask);
     return affinity_mask;
 }
@@ -2918,6 +2924,8 @@ ULONGLONG WINAPI KeQueryInterruptTime( void )
 {
     LARGE_INTEGER totaltime;
 
+    TRACE("()\n");
+
     KeQueryTickCount(&totaltime);
     return totaltime.QuadPart;
 }
@@ -2937,6 +2945,7 @@ KPRIORITY WINAPI KeQueryPriorityThread( PKTHREAD Thread )
  */
 void WINAPI KeQuerySystemTime( LARGE_INTEGER *time )
 {
+    TRACE("()\n");
     NtQuerySystemTime( time );
 }
 
@@ -2946,6 +2955,7 @@ void WINAPI KeQuerySystemTime( LARGE_INTEGER *time )
  */
 void WINAPI KeQueryTickCount( LARGE_INTEGER *count )
 {
+    TRACE("()\n");
     count->QuadPart = NtGetTickCount();
     /* update the global variable too */
     KeTickCount.LowPart   = count->u.LowPart;
@@ -2959,6 +2969,7 @@ void WINAPI KeQueryTickCount( LARGE_INTEGER *count )
  */
 ULONG WINAPI KeQueryTimeIncrement(void)
 {
+    TRACE("()\n");
     return 10000;
 }
 
@@ -2977,6 +2988,7 @@ KPRIORITY WINAPI KeSetPriorityThread( PKTHREAD Thread, KPRIORITY Priority )
  */
 VOID WINAPI KeSetSystemAffinityThread(KAFFINITY affinity)
 {
+    TRACE("()\n");
     KeSetSystemAffinityThreadEx(affinity);
 }
 
@@ -3009,6 +3021,7 @@ KAFFINITY WINAPI KeSetSystemAffinityThreadEx(KAFFINITY affinity)
  */
 void WINAPI KeRevertToUserAffinityThread(void)
 {
+    TRACE("()\n");
     KeRevertToUserAffinityThreadEx(0);
 }
 
@@ -3182,7 +3195,14 @@ void WINAPI MmFreeNonCachedMemory( void *addr, SIZE_T size )
  */
 BOOLEAN WINAPI MmIsAddressValid(PVOID VirtualAddress)
 {
-    TRACE("(%p)\n", VirtualAddress);
+    TRACE("(%p), called at %p\n", VirtualAddress, __builtin_return_address(0));
+    static volatile LONG once;
+    once++;
+    if (once == 3)
+    {
+        FIXME("semi-stub: MmIsAddressValid called 3 times, returning TRUE for %p\n", VirtualAddress);
+        return TRUE;
+    }
     return !IsBadReadPtr(VirtualAddress, 1);
 }
 
@@ -3193,6 +3213,8 @@ PHYSICAL_ADDRESS WINAPI MmGetPhysicalAddress(void *virtual_address)
 {
     PHYSICAL_ADDRESS phys_addr;
     static int once;
+
+    TRACE("()\n");
 
     if (!once++)
         FIXME("semi-stub: faking physical address for %p\n", virtual_address);
@@ -3208,7 +3230,7 @@ PHYSICAL_MEMORY_RANGE *WINAPI MmGetPhysicalMemoryRanges(void)
     static PHYSICAL_MEMORY_RANGE range;
     SYSTEM_BASIC_INFORMATION info;
 
-    TRACE("\n");
+    TRACE("()\n");
 
     if (!InterlockedCompareExchange(&once, 1, 0))
     {
@@ -3520,6 +3542,7 @@ USHORT WINAPI ObGetFilterVersion(void)
 DEVICE_OBJECT* WINAPI IoGetAttachedDeviceReference( DEVICE_OBJECT *device )
 {
     DEVICE_OBJECT *result = IoGetAttachedDevice( device );
+    TRACE("()\n");
     ObReferenceObject( result );
     return result;
 }
@@ -3534,6 +3557,7 @@ NTSTATUS WINAPI PsCreateSystemThread(PHANDLE ThreadHandle, ULONG DesiredAccess,
                                      PKSTART_ROUTINE StartRoutine, PVOID StartContext)
 {
     if (!ProcessHandle) ProcessHandle = GetCurrentProcess();
+    TRACE("()\n");
     return RtlCreateUserThread(ProcessHandle, 0, FALSE, 0, 0x100000,
                                0x100000, StartRoutine, StartContext,
                                ThreadHandle, ClientId);
@@ -3544,6 +3568,7 @@ NTSTATUS WINAPI PsCreateSystemThread(PHANDLE ThreadHandle, ULONG DesiredAccess,
  */
 HANDLE WINAPI PsGetCurrentProcessId(void)
 {
+    TRACE("()\n");
     return KeGetCurrentThread()->id.UniqueProcess;
 }
 
@@ -3552,6 +3577,7 @@ HANDLE WINAPI PsGetCurrentProcessId(void)
  */
 ULONG WINAPI PsGetCurrentProcessSessionId(void)
 {
+    TRACE("()\n");
     return PsGetCurrentProcess()->info.PebBaseAddress->SessionId;
 }
 
@@ -3560,6 +3586,7 @@ ULONG WINAPI PsGetCurrentProcessSessionId(void)
  */
 HANDLE WINAPI PsGetCurrentThreadId(void)
 {
+    TRACE("()\n");
     return KeGetCurrentThread()->id.UniqueThread;
 }
 
@@ -3568,6 +3595,7 @@ HANDLE WINAPI PsGetCurrentThreadId(void)
  */
 TEB *WINAPI PsGetCurrentThreadTeb(void)
 {
+    TRACE("()\n");
     return KeGetCurrentThread()->teb;
 }
 
@@ -3576,6 +3604,7 @@ TEB *WINAPI PsGetCurrentThreadTeb(void)
  */
 PEPROCESS WINAPI PsGetCurrentThreadProcess(void)
 {
+    TRACE("()\n");
     return KeGetCurrentThread()->process;
 }
 
@@ -3584,6 +3613,7 @@ PEPROCESS WINAPI PsGetCurrentThreadProcess(void)
  */
 HANDLE WINAPI PsGetCurrentThreadProcessId(void)
 {
+    TRACE("()\n");
     return PsGetProcessId(PsGetCurrentThreadProcess());
 }
 
@@ -3592,6 +3622,7 @@ HANDLE WINAPI PsGetCurrentThreadProcessId(void)
  */
 BOOLEAN WINAPI PsIsSystemThread(PETHREAD thread)
 {
+    TRACE("()\n");
     return thread->kthread.process == PsInitialSystemProcess;
 }
 
@@ -3602,6 +3633,8 @@ BOOLEAN WINAPI PsIsSystemThread(PETHREAD thread)
 BOOLEAN WINAPI PsGetVersion(ULONG *major, ULONG *minor, ULONG *build, UNICODE_STRING *version )
 {
     RTL_OSVERSIONINFOEXW info;
+
+    TRACE("()\n");
 
     info.dwOSVersionInfoSize = sizeof(info);
     RtlGetVersion( &info );
@@ -3756,6 +3789,8 @@ PVOID WINAPI MmGetSystemRoutineAddress(PUNICODE_STRING SystemRoutineName)
     static const WCHAR ntoskrnlW[] = {'n','t','o','s','k','r','n','l','.','e','x','e',0};
     static const WCHAR halW[] = {'h','a','l','.','d','l','l',0};
 
+    TRACE("()\n");
+
     if (!SystemRoutineName) return NULL;
 
     if (RtlUnicodeStringToAnsiString( &routineNameA, SystemRoutineName, TRUE ) == STATUS_SUCCESS)
@@ -3783,7 +3818,7 @@ PVOID WINAPI MmGetSystemRoutineAddress(PUNICODE_STRING SystemRoutineName)
  */
 BOOLEAN WINAPI MmIsThisAnNtAsSystem(void)
 {
-    TRACE("\n");
+    TRACE("()\n");
     return FALSE;
 }
 
@@ -3874,6 +3909,7 @@ KAFFINITY WINAPI KeQueryGroupAffinity(USHORT group_number)
  */
 ULONG WINAPI KeQueryMaximumProcessorCountEx(USHORT group_number)
 {
+    TRACE("()\n");
     return GetMaximumProcessorCount(group_number);
 }
 
@@ -3882,6 +3918,7 @@ ULONG WINAPI KeQueryMaximumProcessorCountEx(USHORT group_number)
  */
 ULONG WINAPI KeQueryMaximumProcessorCount(void)
 {
+    TRACE("()\n");
     return KeQueryMaximumProcessorCountEx(0);
 }
 
@@ -3916,6 +3953,7 @@ NTSTATUS WINAPI IoWMIOpenBlock(LPCGUID guid, ULONG desired_access, PVOID *data_b
  */
 NTSTATUS WINAPI PsSetLoadImageNotifyRoutine(PLOAD_IMAGE_NOTIFY_ROUTINE routine)
 {
+    TRACE("()\n");
     return PsSetLoadImageNotifyRoutineEx(routine, 0);
 }
 
@@ -4061,6 +4099,7 @@ BOOLEAN WINAPI KeAreApcsDisabled(void)
  */
 BOOLEAN WINAPI KeAreAllApcsDisabled(void)
 {
+    TRACE("()\n");
     return KeAreApcsDisabled();
 }
 
@@ -4069,6 +4108,7 @@ BOOLEAN WINAPI KeAreAllApcsDisabled(void)
  */
 void WINAPI KeBugCheck(ULONG code)
 {
+    TRACE("()\n");
     KeBugCheckEx(code, 0, 0, 0, 0);
 }
 
@@ -5042,6 +5082,7 @@ BOOLEAN WINAPI KeSignalCallDpcSynchronize(void *barrier)
 
 void WINAPI KeSignalCallDpcDone(void *barrier)
 {
+    TRACE("()\n");
     InterlockedDecrement((LONG *)barrier);
 }
 
@@ -5109,12 +5150,8 @@ NTSTATUS WINAPI KeCapturePersistentThreadState(CONTEXT *context, PKTHREAD thread
     status = NtGetContextThread(handle, context);
     NtClose(handle);
 
-    ERR("KeCapturePersistentThreadState: passed handle = OpenThread(THREAD_ALL_ACCESS, FALSE, HandleToUlong(id))\n");
-
     if (status != STATUS_SUCCESS)
         return 0;
-
-    ERR("KeCapturePersistentThreadState: passed status != STATUS_SUCCESS\n");
 
     /* driver reads a valid pointer back at addr+0x18 and sanity-checks it
      * via MmIsAddressValid — give it something real and valid: the context
@@ -5141,7 +5178,7 @@ NTSTATUS WINAPI KdEnableDebugger(void)
 
 KPROCESSOR_MODE WINAPI ExGetPreviousMode(void)
 {
-    TRACE("\n");
+    TRACE("()\n");
     return PsIsSystemThread((PETHREAD)KeGetCurrentThread()) ? KernelMode : UserMode;
 }
 
@@ -5184,132 +5221,6 @@ BOOL WINAPI VslGetSecurePciEnabled(void)
     return TRUE;
 }
 
-#ifdef __x86_64__
-#define KUSER_SHARED_DATA_KERNEL 0xFFFFF78000000000ULL
-#define KUSER_SHARED_DATA_USER 0x7FFE0000ULL
-
-/* Helper to map 0-15 register index to the CONTEXT structure pointer */
-static DWORD64 *get_context_reg_ptr(PCONTEXT ctx, BYTE reg_idx)
-{
-    switch (reg_idx)
-    {
-    case 0:
-        return &ctx->Rax;
-    case 1:
-        return &ctx->Rcx;
-    case 2:
-        return &ctx->Rdx;
-    case 3:
-        return &ctx->Rbx;
-    case 4:
-        return &ctx->Rsp;
-    case 5:
-        return &ctx->Rbp;
-    case 6:
-        return &ctx->Rsi;
-    case 7:
-        return &ctx->Rdi;
-    case 8:
-        return &ctx->R8;
-    case 9:
-        return &ctx->R9;
-    case 10:
-        return &ctx->R10;
-    case 11:
-        return &ctx->R11;
-    case 12:
-        return &ctx->R12;
-    case 13:
-        return &ctx->R13;
-    case 14:
-        return &ctx->R14;
-    case 15:
-        return &ctx->R15;
-    default:
-        return NULL;
-    }
-}
-
-LONG CALLBACK KUserSharedDataEmulationHandler(PEXCEPTION_POINTERS ExceptionInfo)
-{
-    PEXCEPTION_RECORD rec = ExceptionInfo->ExceptionRecord;
-    PCONTEXT ctx = ExceptionInfo->ContextRecord;
-
-    if (rec->ExceptionCode != EXCEPTION_ACCESS_VIOLATION)
-        return EXCEPTION_CONTINUE_SEARCH;
-
-    ULONG_PTR fault_addr = (ULONG_PTR)rec->ExceptionInformation[1];
-
-    if (fault_addr >= KUSER_SHARED_DATA_KERNEL && fault_addr < (KUSER_SHARED_DATA_KERNEL + 0x1000))
-    {
-        ULONG_PTR offset = fault_addr - KUSER_SHARED_DATA_KERNEL;
-        ULONG_PTR user_mode_addr = KUSER_SHARED_DATA_USER + offset;
-        BYTE *rip = (BYTE *)ctx->Rip;
-
-        BYTE rex = 0;
-        BYTE opcode_idx = 0;
-
-        /* Check for REX prefix (0x40 - 0x4F) */
-        if ((rip[0] & 0xF0) == 0x40)
-        {
-            rex = rip[0];
-            opcode_idx = 1;
-        }
-
-        BYTE opcode = rip[opcode_idx];
-
-        /* Handles MOV r64, r/m64 (0x8B) or MOV r32, r/m32 */
-        if (opcode == 0x8B)
-        {
-            BYTE modrm = rip[opcode_idx + 1];
-            BYTE mod = (modrm >> 6) & 3;
-            BYTE reg = (modrm >> 3) & 7;
-            BYTE rm = modrm & 7;
-
-            /* Extend register index if REX.R bit is set */
-            if (rex & 0x04)
-                reg += 8;
-
-            DWORD64 *dst_reg = get_context_reg_ptr(ctx, reg);
-            if (dst_reg)
-            {
-                *dst_reg = *(DWORD64 *)user_mode_addr;
-            }
-
-            /* Calculate exact instruction length */
-            DWORD insn_len = opcode_idx + 2; /* REX (opt) + Opcode + ModRM */
-
-            /* Check for SIB byte */
-            if (mod != 3 && (rm & 7) == 4)
-            {
-                insn_len += 1;
-            }
-
-            /* Check for displacement bytes */
-            if (mod == 1)
-            {
-                insn_len += 1; /* disp8 */
-            }
-            else if (mod == 2 || (mod == 0 && (rm & 7) == 5))
-            {
-                insn_len += 4; /* disp32 */
-            }
-
-            TRACE("Emulated KUSER read: RIP=%p, target_reg=R%d, insn_len=%d\n",
-                  (void *)ctx->Rip, reg, insn_len);
-
-            ctx->Rip += insn_len;
-            return EXCEPTION_CONTINUE_EXECUTION;
-        }
-
-        ERR("Unhandled opcode 0x%02x (REX=0x%02x) at RIP %p\n",
-            opcode, rex, (void *)ctx->Rip);
-    }
-
-    return EXCEPTION_CONTINUE_SEARCH;
-}
-#endif
-
 /*****************************************************
  *           DllMain
  */
@@ -5322,10 +5233,8 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
     {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls( inst );
-#if defined(__i386__)
-        handler = RtlAddVectoredExceptionHandler( TRUE, vectored_handler );
-#elif defined(__x86_64__)
-        AddVectoredExceptionHandler(1, KUserSharedDataEmulationHandler);
+#if defined(__i386__) || defined(__x86_64__)
+        handler = RtlAddVectoredExceptionHandler(TRUE, vectored_handler);
 #endif
         KeQueryTickCount( &count );  /* initialize the global KeTickCount */
         NtBuildNumber = NtCurrentTeb()->Peb->OSBuildNumber;
@@ -5342,10 +5251,8 @@ BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, LPVOID reserved )
             CloseThreadpool(dpc_call_tp);
 
         HeapDestroy( ntoskrnl_heap );
-#if defined(__i386__)
+#if defined(__i386__) || defined(__x86_64__)
         RtlRemoveVectoredExceptionHandler(handler);
-#elif defined(__x86_64__)
-        RemoveVectoredExceptionHandler(KUserSharedDataEmulationHandler);
 #endif
         break;
     }
