@@ -24,6 +24,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "windef.h"
 #include "winbase.h"
 #include "wintrust.h"
@@ -479,6 +480,14 @@ HCATINFO WINAPI CryptCATAdminEnumCatalogFromHash(HCATADMIN hCatAdmin, BYTE* pbHa
 
     TRACE("%p %p %ld %lx %p\n", hCatAdmin, pbHash, cbHash, dwFlags, phPrevCatInfo);
 
+    /* --- HSR WINTRUST BYPASS --- */
+    if (!getenv("DISABLE_WINTRUST_PATCH"))
+    {
+        WARN("HSR bypass: Stubbing CryptCATAdminEnumCatalogFromHash\n");
+        return (HCATINFO)1; /* 1 cast to a handle */
+    }
+    /* --------------------------- */
+
     if (!ca || ca->magic != CATADMIN_MAGIC || !pbHash || cbHash != 20 || dwFlags)
     {
         SetLastError(ERROR_INVALID_PARAMETER);
@@ -603,6 +612,14 @@ BOOL WINAPI CryptCATAdminReleaseCatalogContext(HCATADMIN hCatAdmin,
     struct catadmin *ca = hCatAdmin;
 
     TRACE("%p %p %lx\n", hCatAdmin, hCatInfo, dwFlags);
+
+    /* --- HSR WINTRUST BYPASS --- */
+    if (!getenv("DISABLE_WINTRUST_PATCH"))
+    {
+        WARN("HSR bypass: Stubbing CryptCATAdminReleaseCatalogContext\n");
+        return TRUE; /* TRUE is 1 */
+    }
+    /* --------------------------- */
 
     if (!ca || ca->magic != CATADMIN_MAGIC || !ci || ci->magic != CATINFO_MAGIC)
     {
@@ -1025,6 +1042,14 @@ BOOL WINAPI CryptCATCatalogInfoFromContext(HCATINFO hcatinfo, CATALOG_INFO *info
     struct catinfo *ci = hcatinfo;
 
     TRACE("%p, %p, %lx\n", hcatinfo, info, flags);
+
+    /* --- HSR WINTRUST BYPASS --- */
+    if (!getenv("DISABLE_WINTRUST_PATCH"))
+    {
+        WARN("HSR bypass: Stubbing CryptCATCatalogInfoFromContext\n");
+        return TRUE; /* TRUE is 1 */
+    }
+    /* --------------------------- */
 
     if (!hcatinfo || hcatinfo == INVALID_HANDLE_VALUE || ci->magic != CATINFO_MAGIC ||
         flags || !info || info->cbStruct != sizeof(*info))
