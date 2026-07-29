@@ -1244,6 +1244,10 @@ static inline DWORD is_privileged_instr( CONTEXT *context )
     if (!ldt_is_system( context->SegCs )) return 0;
     len = virtual_uninterrupted_read_memory( (BYTE *)context->Eip, instr, sizeof(instr) );
 
+    ERR("is_privileged_instr i386: rip=%p len=%u bytes=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+        (void *)context->Rip, len,
+        instr[0], instr[1], instr[2], instr[3], instr[4], instr[5], instr[6], instr[7]);
+
     for (i = 0; i < len; i++) switch (instr[i])
     {
     /* instruction prefixes */

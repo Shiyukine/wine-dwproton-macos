@@ -2042,6 +2042,9 @@ static inline DWORD is_privileged_instr( CONTEXT *context )
         (void *)context->Rip, len,
         instr[0], instr[1], instr[2], instr[3], instr[4], instr[5], instr[6], instr[7]);
 
+    ERR("is_privileged_instr: rip=%p rbp=%p rsp=%p\n",
+        (void *)context->Rip, (void *)context->Rbp, (void *)context->Rsp);
+
     for (i = 0; i < len; i++) switch (instr[i])
     {
     /* instruction prefixes */
@@ -2566,7 +2569,11 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     case TRAP_x86_PROTFLT:   /* General protection fault */
         {
             WORD err = ERROR_sig(ucontext);
-            if (!err && (rec.ExceptionCode = is_privileged_instr( &context.c ))) break;
+            if (!err && (rec.ExceptionCode = is_privileged_instr(&context.c)))
+            {
+                ERR("PROTFLT: is_privileged_instr returned 0x%lx\n", (long)rec.ExceptionCode);
+                break;
+            }
             if ((err & 7) == 2 && handle_interrupt( ucontext, &rec, &context )) return;
             rec.ExceptionCode = EXCEPTION_ACCESS_VIOLATION;
             rec.NumberParameters = 2;
