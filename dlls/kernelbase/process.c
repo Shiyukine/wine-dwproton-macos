@@ -511,7 +511,8 @@ static const WCHAR *hack_append_command_line(const WCHAR *cmd, const WCHAR *cmd_
     } options[] =
         {
             {L"steamwebhelper.exe", L" --no-sandbox --in-process-gpu --disable-gpu", NULL, L"--type=crashpad-handler"},
-        };
+            {L"HYP.exe", L"--in-process-gpu", NULL, NULL},
+    };
     unsigned int i;
 
     if (!cmd)
@@ -572,6 +573,40 @@ BOOL WINAPI DECLSPEC_HOTPATCH CreateProcessInternalW( HANDLE token, const WCHAR 
     {
         if (!(tidy_cmdline = get_file_name( cmd_line, name, ARRAY_SIZE(name) ))) return FALSE;
         app_name = name;
+    }
+
+    if (app_name && (wcsstr(app_name, L"ZenlessZoneZero.exe") || wcsstr(app_name, L"GenshinImpact.exe")) && !wcsstr(cmd_line, L"--routed"))
+    {
+        char narrow_path[MAX_PATH * 2];
+        WideCharToMultiByte(CP_UTF8, 0, app_name, -1, narrow_path, sizeof(narrow_path), NULL, NULL);
+
+        /* escape backslashes for the shell string (each \ becomes \\) */
+        char escaped_path[MAX_PATH * 4];
+        {
+            const char *src = narrow_path;
+            char *dst = escaped_path;
+            while (*src)
+            {
+                if (*src == '\\')
+                    *dst++ = '\\'; /* double it */
+                *dst++ = *src++;
+            }
+            *dst = 0;
+        }
+
+        char shell_cmd[MAX_PATH * 8];
+        snprintf(shell_cmd, sizeof(shell_cmd),
+                 "WSPID=$(pgrep -n wineserver); "
+                 "BIN=$(dirname \"$(ps -p \"$WSPID\" -o comm=)\"); "
+                 "\"$BIN/wineserver\" -k; "
+                 "sleep 1; "
+                 " \"$BIN/wine\" "
+                 "\"C:\\\\windows\\\\system32\\\\steam.exe\" "
+                 "\"%s\" --routed",
+                 escaped_path);
+
+        const char *argv[] = {"/bin/sh", "-c", shell_cmd, NULL};
+        __wine_unix_spawnvp((char **)argv, FALSE);
     }
 
     /* CW Hack 24938 */
