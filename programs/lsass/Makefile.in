@@ -1,0 +1,6 @@
+MODULE    = lsass.exe
+
+EXTRADLLFLAGS = -mwindows
+
+SOURCES = \
+	main.c

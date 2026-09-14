@@ -1424,6 +1424,22 @@ static int ProcessWindowsFileProtection(void)
     return 1;
 }
 
+/* start one of the stub system processes; they exit by themselves once the
+ * last ordinary process is gone, so nothing waits for them here */
+static void start_stub_process(const WCHAR *path)
+{
+    PROCESS_INFORMATION pi;
+    STARTUPINFOW si = {sizeof(si)};
+
+    if (!CreateProcessW(path, NULL, NULL, NULL, FALSE, DETACHED_PROCESS, NULL, NULL, &si, &pi))
+    {
+        WINE_ERR("Couldn't start %s: error %lu\n", wine_dbgstr_w(path), GetLastError());
+        return;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
 static BOOL start_services_process(void)
 {
     static const WCHAR svcctl_started_event[] = SVCCTL_STARTED_EVENT;
@@ -1960,6 +1976,8 @@ int __cdecl main( int argc, char *argv[] )
     {
         ProcessRunKeys( HKEY_LOCAL_MACHINE, L"RunServices", FALSE, FALSE );
         start_services_process();
+        start_stub_process(L"C:\\windows\\system32\\csrss.exe");
+        start_stub_process(L"C:\\windows\\system32\\lsass.exe");
     }
 
     if (init || update) update_wineprefix( update );
